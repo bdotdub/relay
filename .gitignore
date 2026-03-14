@@ -1,4 +1,2 @@
-.venv/
-__pycache__/
-*.pyc
 .relay-state.json
+target/

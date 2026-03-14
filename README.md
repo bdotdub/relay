@@ -1,6 +1,6 @@
 # Telegram Codex Relay
 
-Small Python service that relays Telegram bot messages into the Codex app server and sends Codex replies back to Telegram.
+Small Rust service that relays Telegram bot messages into the Codex app server and sends Codex replies back to Telegram.
 
 Default behavior:
 
@@ -18,16 +18,14 @@ For a Telegram bot, the Bot API is the practical transport. This relay uses long
 
 ## Requirements
 
-- Python 3.11+
+- Rust 1.75+ with Cargo
 - a Telegram bot token from BotFather
 - Codex CLI installed and authenticated
 
 ## Install
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+cargo build
 ```
 
 ## Configure
@@ -51,19 +49,22 @@ export CODEX_SANDBOX="workspace-write"
 Default mode, which auto-starts the Codex app server:
 
 ```bash
-telegram-codex-relay
+cargo run -- \
+  --start-app-server
 ```
 
 Equivalent explicit form:
 
 ```bash
-telegram-codex-relay --start-app-server --codex-app-server-command "codex app-server"
+cargo run -- \
+  --start-app-server \
+  --codex-app-server-command "codex app-server"
 ```
 
 External app-server mode:
 
 ```bash
-telegram-codex-relay \
+cargo run -- \
   --no-start-app-server \
   --codex-app-server-ws-url "ws://127.0.0.1:8765"
 ```
@@ -79,6 +80,7 @@ Any other plain text message is forwarded to Codex.
 ## Notes
 
 - Only plain text messages are handled right now.
+- Updates are processed sequentially; one Telegram message is relayed at a time.
 - Each Telegram chat maps to a single Codex thread.
 - If the Codex app server restarts, the relay will try to resume saved thread ids.
 - Telegram messages are chunked before sending to stay below Telegram's message size limit.
