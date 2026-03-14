@@ -46,6 +46,7 @@ func newTelegramClient(token string) *telegramClient {
 }
 
 func (c *telegramClient) deleteWebhook(ctx context.Context, dropPending bool) error {
+	verbosef("telegram deleteWebhook %s", kvSummary("drop_pending", dropPending))
 	payload := map[string]any{
 		"drop_pending_updates": dropPending,
 	}
@@ -54,6 +55,7 @@ func (c *telegramClient) deleteWebhook(ctx context.Context, dropPending bool) er
 }
 
 func (c *telegramClient) getUpdates(ctx context.Context, offset *int64, timeoutSeconds int) ([]telegramUpdate, error) {
+	verbosef("telegram getUpdates %s", kvSummary("offset", offsetValue(offset), "timeout", timeoutSeconds))
 	payload := map[string]any{
 		"timeout":         timeoutSeconds,
 		"allowed_updates": []string{"message"},
@@ -65,20 +67,34 @@ func (c *telegramClient) getUpdates(ctx context.Context, offset *int64, timeoutS
 	if err := c.call(ctx, "getUpdates", payload, &result); err != nil {
 		return nil, err
 	}
+	if len(result) > 0 {
+		verbosef("telegram getUpdates result %s", kvSummary("updates", len(result)))
+	}
 	return result, nil
 }
 
-func (c *telegramClient) sendMessage(ctx context.Context, chatID int64, text string, replyToMessageID *int64) error {
+func (c *telegramClient) sendMessage(ctx context.Context, chatID int64, text string) error {
+	verbosef("telegram sendMessage %s", kvSummary(
+		"chat_id", chatID,
+		"text", summarizeText(text),
+	))
 	payload := map[string]any{
 		"chat_id":                  chatID,
 		"text":                     text,
 		"disable_web_page_preview": true,
 	}
-	if replyToMessageID != nil {
-		payload["reply_to_message_id"] = *replyToMessageID
-	}
 	var result any
 	return c.call(ctx, "sendMessage", payload, &result)
+}
+
+func (c *telegramClient) sendChatAction(ctx context.Context, chatID int64, action string) error {
+	verbosef("telegram sendChatAction %s", kvSummary("chat_id", chatID, "action", action))
+	payload := map[string]any{
+		"chat_id": chatID,
+		"action":  action,
+	}
+	var result any
+	return c.call(ctx, "sendChatAction", payload, &result)
 }
 
 func (c *telegramClient) call(ctx context.Context, method string, payload any, out any) error {
@@ -112,6 +128,7 @@ func (c *telegramClient) call(ctx context.Context, method string, payload any, o
 		}
 		return fmt.Errorf("telegram request %s failed: %s", method, decoded.Description)
 	}
+	verbosef("telegram %s ok", method)
 	if out == nil {
 		return nil
 	}
@@ -122,6 +139,13 @@ func (c *telegramClient) call(ctx context.Context, method string, payload any, o
 		return fmt.Errorf("decode telegram result %s: %w", method, err)
 	}
 	return nil
+}
+
+func offsetValue(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 func chunkMessage(text string, limit int) []string {

@@ -18,6 +18,10 @@ func stringsIndexAny(value, chars string) int {
 	return strings.IndexAny(value, chars)
 }
 
+func stringsContains(value, substr string) bool {
+	return strings.Contains(value, substr)
+}
+
 func joinParagraphs(values []string) string {
 	return stringsJoin(values, "\n\n")
 }

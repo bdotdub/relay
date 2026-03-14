@@ -7,13 +7,50 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 )
 
+type telegramService interface {
+	deleteWebhook(ctx context.Context, dropPending bool) error
+	getUpdates(ctx context.Context, offset *int64, timeoutSeconds int) ([]telegramUpdate, error)
+	sendMessage(ctx context.Context, chatID int64, text string) error
+	sendChatAction(ctx context.Context, chatID int64, action string) error
+}
+
 type relayApp struct {
-	cfg             config
-	telegram        *telegramClient
-	codex           *codexClient
+	cfg      config
+	telegram telegramService
+	codex    codexService
+
+	stateMu         sync.RWMutex
 	threadIDsByChat map[string]string
+	verboseByChat   map[int64]bool
+	lastUsageByChat map[int64]tokenUsage
+
+	workersMu sync.Mutex
+	workers   map[int64]*chatWorker
+}
+
+type chatWorker struct {
+	app    *relayApp
+	chatID int64
+	events chan chatEvent
+}
+
+type chatEvent struct {
+	messageID int64
+	text      string
+	isCommand bool
+}
+
+type activeChatTurn struct {
+	threadID       string
+	turnID         string
+	replyMessageID int64
+	eventCh        <-chan turnStreamEvent
+	resultCh       <-chan turnResult
+	stopTyping     func()
 }
 
 func newRelayApp(cfg config) (*relayApp, error) {
@@ -22,12 +59,19 @@ func newRelayApp(cfg config) (*relayApp, error) {
 	if err != nil {
 		return nil, err
 	}
+	return newRelayAppWithServices(cfg, telegram, codex), nil
+}
+
+func newRelayAppWithServices(cfg config, telegram telegramService, codex codexService) *relayApp {
 	return &relayApp{
 		cfg:             cfg,
 		telegram:        telegram,
 		codex:           codex,
 		threadIDsByChat: map[string]string{},
-	}, nil
+		verboseByChat:   map[int64]bool{},
+		lastUsageByChat: map[int64]tokenUsage{},
+		workers:         map[int64]*chatWorker{},
+	}
 }
 
 func (a *relayApp) run(ctx context.Context) error {
@@ -49,6 +93,7 @@ func (a *relayApp) run(ctx context.Context) error {
 		for _, update := range updates {
 			nextOffset := update.UpdateID + 1
 			offset = &nextOffset
+			verbosef("telegram update received %s", kvSummary("update_id", update.UpdateID))
 			if err := a.handleUpdate(ctx, update); err != nil {
 				return err
 			}
@@ -61,69 +106,178 @@ func (a *relayApp) handleUpdate(ctx context.Context, update telegramUpdate) erro
 		return nil
 	}
 	message := update.Message
+	verbosef("telegram message received %s", kvSummary(
+		"chat_id", message.Chat.ID,
+		"message_id", message.MessageID,
+		"text", summarizeText(message.Text),
+	))
 	if !a.isChatAllowed(message.Chat.ID) {
+		verbosef("telegram message ignored %s", kvSummary("chat_id", message.Chat.ID, "reason", "chat_not_allowed"))
 		return nil
 	}
 	if stringsTrimSpace(message.Text) == "" {
-		replyTo := message.MessageID
-		return a.telegram.sendMessage(ctx, message.Chat.ID, "Only plain text messages are supported right now.", &replyTo)
+		return a.telegram.sendMessage(ctx, message.Chat.ID, "Only plain text messages are supported right now.")
 	}
-	if len(message.Text) > 0 && message.Text[0] == '/' {
-		return a.handleCommand(ctx, message.Chat.ID, message.MessageID, message.Text)
+
+	worker := a.workerForChat(ctx, message.Chat.ID)
+	verbosef("dispatching message to chat worker %s", kvSummary("chat_id", message.Chat.ID, "command", len(message.Text) > 0 && message.Text[0] == '/'))
+	worker.events <- chatEvent{
+		messageID: message.MessageID,
+		text:      message.Text,
+		isCommand: len(message.Text) > 0 && message.Text[0] == '/',
 	}
-	return a.relayMessage(ctx, message.Chat.ID, message.MessageID, message.Text)
+	return nil
 }
 
-func (a *relayApp) handleCommand(ctx context.Context, chatID int64, messageID int64, text string) error {
-	command := firstCommandToken(text)
-	replyTo := messageID
+func (a *relayApp) workerForChat(ctx context.Context, chatID int64) *chatWorker {
+	a.workersMu.Lock()
+	defer a.workersMu.Unlock()
 
-	switch command {
-	case "/new", "/reset":
-		threadID, err := a.codex.newThread(ctx)
-		if err != nil {
-			return err
+	worker := a.workers[chatID]
+	if worker != nil {
+		return worker
+	}
+
+	worker = &chatWorker{
+		app:    a,
+		chatID: chatID,
+		events: make(chan chatEvent, 64),
+	}
+	a.workers[chatID] = worker
+	verbosef("created chat worker %s", kvSummary("chat_id", chatID))
+	go worker.run(ctx)
+	return worker
+}
+
+func (w *chatWorker) run(ctx context.Context) {
+	var active *activeChatTurn
+
+	for {
+		if active == nil {
+			select {
+			case <-ctx.Done():
+				return
+			case event := <-w.events:
+				nextActive, stop := w.handleEvent(ctx, event, nil)
+				if stop {
+					return
+				}
+				active = nextActive
+			}
+			continue
 		}
-		a.threadIDsByChat[fmt.Sprintf("%d", chatID)] = threadID
-		if err := a.saveState(); err != nil {
-			return err
+
+		select {
+		case <-ctx.Done():
+			if active != nil && active.stopTyping != nil {
+				active.stopTyping()
+			}
+			return
+		case event, ok := <-active.eventCh:
+			if !ok {
+				active.eventCh = nil
+				continue
+			}
+			w.handleTurnEvent(ctx, active.replyMessageID, event)
+		case result, ok := <-active.resultCh:
+			if active.stopTyping != nil {
+				active.stopTyping()
+			}
+			if ok {
+				w.drainTurnEvents(ctx, active)
+				w.finishTurn(ctx, active.replyMessageID, result)
+			}
+			active = nil
+		case event := <-w.events:
+			nextActive, stop := w.handleEvent(ctx, event, active)
+			if stop {
+				return
+			}
+			active = nextActive
 		}
-		return a.telegram.sendMessage(ctx, chatID, fmt.Sprintf("Started a new Codex thread.\nthread_id=%s", threadID), &replyTo)
-	case "/status":
-		threadID := a.threadIDsByChat[fmt.Sprintf("%d", chatID)]
-		if threadID == "" {
-			threadID = "(not started yet)"
-		}
-		mode := "stdio subprocess"
-		if !a.cfg.codexStartAppServer {
-			mode = "websocket"
-		}
-		return a.telegram.sendMessage(ctx, chatID, fmt.Sprintf("Transport: %s\nThread: %s\nCWD: %s", mode, threadID, a.cfg.codexCWD), &replyTo)
-	case "/help":
-		return a.telegram.sendMessage(ctx, chatID, "Send any text message to relay it to Codex.\n/new or /reset starts a fresh Codex thread.\n/status shows the current thread mapping.", &replyTo)
-	default:
-		return a.telegram.sendMessage(ctx, chatID, "Unknown command. Use /help for the supported commands.", &replyTo)
 	}
 }
 
-func (a *relayApp) relayMessage(ctx context.Context, chatID int64, messageID int64, text string) error {
-	chatKey := fmt.Sprintf("%d", chatID)
-	threadID, err := a.codex.ensureThread(ctx, a.threadIDsByChat[chatKey])
-	if err != nil {
-		return err
-	}
-	if a.threadIDsByChat[chatKey] != threadID {
-		a.threadIDsByChat[chatKey] = threadID
-		if err := a.saveState(); err != nil {
-			return err
+func (w *chatWorker) handleEvent(ctx context.Context, event chatEvent, active *activeChatTurn) (*activeChatTurn, bool) {
+	if event.isCommand {
+		verbosef("chat worker handling command %s", kvSummary("chat_id", w.chatID, "message_id", event.messageID, "command", firstCommandToken(event.text)))
+		if err := w.handleCommand(ctx, event.messageID, event.text); err != nil {
+			w.sendError(ctx, event.messageID, err)
 		}
+		return active, false
 	}
 
-	result, err := a.codex.runTurn(ctx, threadID, text)
-	if err != nil {
-		replyTo := messageID
-		return a.telegram.sendMessage(ctx, chatID, fmt.Sprintf("Codex relay error: %v", err), &replyTo)
+	if active != nil {
+		verbosef("chat worker steering active turn %s", kvSummary("chat_id", w.chatID, "thread_id", active.threadID, "turn_id", active.turnID))
+		if err := w.app.codex.steerTurn(ctx, active.threadID, active.turnID, event.text); err != nil {
+			w.sendError(ctx, event.messageID, fmt.Errorf("steer codex turn: %w", err))
+		}
+		return active, false
 	}
+
+	nextActive, err := w.startTurn(ctx, event.messageID, event.text)
+	if err != nil {
+		w.sendError(ctx, event.messageID, err)
+		return nil, false
+	}
+	return nextActive, false
+}
+
+func (w *chatWorker) startTurn(ctx context.Context, messageID int64, text string) (*activeChatTurn, error) {
+	threadID, err := w.app.codex.ensureThread(ctx, w.app.threadIDForChat(w.chatID))
+	if err != nil {
+		return nil, err
+	}
+	if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {
+		return nil, err
+	}
+
+	handle, err := w.app.codex.startTurn(ctx, threadID, text)
+	if err != nil {
+		return nil, err
+	}
+
+	verbosef("chat worker started turn %s", kvSummary("chat_id", w.chatID, "thread_id", handle.ThreadID, "turn_id", handle.TurnID))
+	return &activeChatTurn{
+		threadID:       handle.ThreadID,
+		turnID:         handle.TurnID,
+		replyMessageID: messageID,
+		eventCh:        handle.EventCh,
+		resultCh:       handle.ResultCh,
+		stopTyping:     w.startTypingLoop(ctx),
+	}, nil
+}
+
+func (w *chatWorker) startTypingLoop(ctx context.Context) func() {
+	typingCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		if err := w.app.telegram.sendChatAction(typingCtx, w.chatID, "typing"); err != nil {
+			verbosef("telegram typing failed %s", kvSummary("chat_id", w.chatID, "error", err))
+		}
+
+		ticker := time.NewTicker(4 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-typingCtx.Done():
+				return
+			case <-ticker.C:
+				if err := w.app.telegram.sendChatAction(typingCtx, w.chatID, "typing"); err != nil {
+					verbosef("telegram typing failed %s", kvSummary("chat_id", w.chatID, "error", err))
+				}
+			}
+		}
+	}()
+	return cancel
+}
+
+func (w *chatWorker) finishTurn(ctx context.Context, replyMessageID int64, result turnResult) {
+	if result.err != nil {
+		w.sendError(ctx, replyMessageID, result.err)
+		return
+	}
+	w.app.setLastUsageForChat(w.chatID, result.usage)
 
 	reply := result.text
 	if result.errorMessage != "" {
@@ -138,17 +292,87 @@ func (a *relayApp) relayMessage(ctx context.Context, chatID int64, messageID int
 		reply = "Codex completed the turn without returning assistant text."
 	}
 
-	chunks := chunkMessage(reply, a.cfg.telegramMessageChunkSize)
-	for index, chunk := range chunks {
-		var replyTo *int64
-		if index == 0 {
-			replyTo = &messageID
-		}
-		if err := a.telegram.sendMessage(ctx, chatID, chunk, replyTo); err != nil {
-			return err
+	chunks := chunkMessage(reply, w.app.cfg.telegramMessageChunkSize)
+	verbosef("chat worker replying %s", kvSummary("chat_id", w.chatID, "chunks", len(chunks), "text", summarizeText(reply)))
+	for _, chunk := range chunks {
+		if err := w.app.telegram.sendMessage(ctx, w.chatID, chunk); err != nil {
+			return
 		}
 	}
-	return nil
+}
+
+func (w *chatWorker) handleTurnEvent(ctx context.Context, replyMessageID int64, event turnStreamEvent) {
+	if !w.app.verboseForChat(w.chatID) {
+		return
+	}
+	text := stringsTrimSpace(event.text)
+	if text == "" {
+		return
+	}
+	verbosef("chat worker intermediate update %s", kvSummary("chat_id", w.chatID, "text", summarizeText(text)))
+	if err := w.app.telegram.sendMessage(ctx, w.chatID, text); err != nil {
+		verbosef("chat worker intermediate update failed %s", kvSummary("chat_id", w.chatID, "error", err))
+	}
+}
+
+func (w *chatWorker) drainTurnEvents(ctx context.Context, active *activeChatTurn) {
+	for active != nil && active.eventCh != nil {
+		select {
+		case event, ok := <-active.eventCh:
+			if !ok {
+				active.eventCh = nil
+				return
+			}
+			w.handleTurnEvent(ctx, active.replyMessageID, event)
+		default:
+			return
+		}
+	}
+}
+
+func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text string) error {
+	command := firstCommandToken(text)
+
+	switch command {
+	case "/new", "/reset":
+		threadID, err := w.app.codex.newThread(ctx)
+		if err != nil {
+			return err
+		}
+		if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {
+			return err
+		}
+		return w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("Started a new Codex thread.\nthread_id=%s", threadID))
+	case "/status":
+		threadID := w.app.threadIDForChat(w.chatID)
+		if threadID == "" {
+			threadID = "(not started yet)"
+		}
+		mode := "stdio subprocess"
+		if !w.app.cfg.codexStartAppServer {
+			mode = "websocket"
+		}
+		return w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("Transport: %s\nThread: %s\nCWD: %s\nTokens: %s", mode, threadID, w.app.cfg.codexCWD, formatTokenUsage(w.app.lastUsageForChat(w.chatID))))
+	case "/help":
+		return w.app.telegram.sendMessage(ctx, w.chatID, "Send any text message to relay it to Codex.\n/new or /reset starts a fresh Codex thread.\n/status shows the current thread mapping and last token usage.\n/verbose toggles intermediate visible output for this chat.")
+	case "/verbose":
+		enabled, message := w.app.toggleVerboseForChat(w.chatID, text)
+		if message == "" {
+			if enabled {
+				message = "Verbose mode enabled for this chat."
+			} else {
+				message = "Verbose mode disabled for this chat."
+			}
+		}
+		return w.app.telegram.sendMessage(ctx, w.chatID, message)
+	default:
+		return w.app.telegram.sendMessage(ctx, w.chatID, "Unknown command. Use /help for the supported commands.")
+	}
+}
+
+func (w *chatWorker) sendError(ctx context.Context, replyMessageID int64, err error) {
+	verbosef("chat worker error %s", kvSummary("chat_id", w.chatID, "error", err))
+	_ = w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("Codex relay error: %v", err))
 }
 
 func (a *relayApp) isChatAllowed(chatID int64) bool {
@@ -159,21 +383,108 @@ func (a *relayApp) isChatAllowed(chatID int64) bool {
 	return ok
 }
 
+func (a *relayApp) threadIDForChat(chatID int64) string {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.threadIDsByChat[fmt.Sprintf("%d", chatID)]
+}
+
+func (a *relayApp) verboseForChat(chatID int64) bool {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.verboseByChat[chatID]
+}
+
+func (a *relayApp) lastUsageForChat(chatID int64) *tokenUsage {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	usage, ok := a.lastUsageByChat[chatID]
+	if !ok {
+		return nil
+	}
+	copy := usage
+	return &copy
+}
+
+func (a *relayApp) toggleVerboseForChat(chatID int64, text string) (bool, string) {
+	command := stringsTrimSpace(text)
+	arg := ""
+	if index := stringsIndexAny(command, " \t\r\n"); index >= 0 {
+		arg = stringsTrimSpace(command[index+1:])
+	}
+
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+
+	switch arg {
+	case "", "toggle":
+		a.verboseByChat[chatID] = !a.verboseByChat[chatID]
+	case "on":
+		a.verboseByChat[chatID] = true
+	case "off":
+		a.verboseByChat[chatID] = false
+	case "status":
+		if a.verboseByChat[chatID] {
+			return true, "Verbose mode is enabled for this chat."
+		}
+		return false, "Verbose mode is disabled for this chat."
+	default:
+		return a.verboseByChat[chatID], "Usage: /verbose, /verbose on, /verbose off, or /verbose status"
+	}
+	verbosef("chat verbose mode changed %s", kvSummary("chat_id", chatID, "enabled", a.verboseByChat[chatID]))
+
+	if a.verboseByChat[chatID] {
+		return true, ""
+	}
+	return false, ""
+}
+
+func (a *relayApp) setThreadIDForChat(chatID int64, threadID string) error {
+	chatKey := fmt.Sprintf("%d", chatID)
+	a.stateMu.Lock()
+	changed := a.threadIDsByChat[chatKey] != threadID
+	if changed {
+		a.threadIDsByChat[chatKey] = threadID
+		delete(a.lastUsageByChat, chatID)
+	}
+	a.stateMu.Unlock()
+	if changed {
+		return a.saveState()
+	}
+	return nil
+}
+
+func (a *relayApp) setLastUsageForChat(chatID int64, usage *tokenUsage) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if usage == nil {
+		delete(a.lastUsageByChat, chatID)
+		return
+	}
+	a.lastUsageByChat[chatID] = *usage
+}
+
 func (a *relayApp) loadState() error {
 	data, err := os.ReadFile(a.cfg.statePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			a.stateMu.Lock()
 			a.threadIDsByChat = map[string]string{}
+			a.stateMu.Unlock()
 			return nil
 		}
 		return fmt.Errorf("read relay state: %w", err)
 	}
 	var mapping map[string]string
 	if err := json.Unmarshal(data, &mapping); err != nil {
+		a.stateMu.Lock()
 		a.threadIDsByChat = map[string]string{}
+		a.stateMu.Unlock()
 		return nil
 	}
+	a.stateMu.Lock()
 	a.threadIDsByChat = mapping
+	a.stateMu.Unlock()
 	return nil
 }
 
@@ -181,7 +492,10 @@ func (a *relayApp) saveState() error {
 	if err := os.MkdirAll(filepath.Dir(a.cfg.statePath), 0o755); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
 	}
+
+	a.stateMu.RLock()
 	data, err := json.MarshalIndent(a.threadIDsByChat, "", "  ")
+	a.stateMu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("marshal relay state: %w", err)
 	}
@@ -205,4 +519,11 @@ func firstCommandToken(text string) string {
 		token = token[:index]
 	}
 	return token
+}
+
+func formatTokenUsage(usage *tokenUsage) string {
+	if usage == nil {
+		return "(not available yet)"
+	}
+	return summarizeTokenUsage(usage)
 }

@@ -44,6 +44,7 @@ type jsonRPCResponse struct {
 }
 
 func newJSONRPCStdioClient(command []string) (*jsonRPCClient, error) {
+	verbosef("starting codex app-server %s", kvSummary("command", stringsJoin(command, " ")))
 	cmd := exec.Command(command[0], command[1:]...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -80,6 +81,7 @@ func newJSONRPCStdioClient(command []string) (*jsonRPCClient, error) {
 }
 
 func newJSONRPCWebSocketClient(rawURL string) (*jsonRPCClient, error) {
+	verbosef("connecting codex websocket %s", kvSummary("url", rawURL))
 	conn, err := dialWebSocket(rawURL)
 	if err != nil {
 		return nil, err
@@ -108,6 +110,7 @@ func (c *jsonRPCClient) request(ctx context.Context, method string, params map[s
 		"method":  method,
 		"params":  params,
 	}
+	verbosef("jsonrpc request %s", summarizeJSONRPCMessage(payload))
 	if err := c.writer.WriteJSON(payload); err != nil {
 		c.removePending(requestID)
 		return nil, err
@@ -115,6 +118,9 @@ func (c *jsonRPCClient) request(ctx context.Context, method string, params map[s
 
 	select {
 	case response := <-responseCh:
+		if response.err == nil {
+			verbosef("jsonrpc response %s", kvSummary("method", method, "id", requestID))
+		}
 		return response.result, response.err
 	case <-ctx.Done():
 		c.removePending(requestID)
@@ -130,6 +136,7 @@ func (c *jsonRPCClient) notify(method string, params map[string]any) error {
 	if params != nil {
 		payload["params"] = params
 	}
+	verbosef("jsonrpc notify %s", summarizeJSONRPCMessage(payload))
 	return c.writer.WriteJSON(payload)
 }
 
@@ -201,6 +208,7 @@ func (c *jsonRPCClient) routeIncoming(raw []byte) error {
 			return nil
 		}
 		if errorValue, ok := payload["error"]; ok {
+			verbosef("jsonrpc error %s", kvSummary("id", id, "error", summarizeValue(errorValue)))
 			responseCh <- jsonRPCResponse{err: fmt.Errorf("json-rpc error: %v", errorValue)}
 			return nil
 		}
@@ -212,6 +220,7 @@ func (c *jsonRPCClient) routeIncoming(raw []byte) error {
 		return nil
 	}
 	if _, ok := payload["method"]; ok {
+		verbosef("jsonrpc notification %s", summarizeJSONRPCMessage(payload))
 		c.notifyCh <- payload
 	}
 	return nil
@@ -253,7 +262,47 @@ func (w *stdioJSONRPCWriter) WriteJSON(payload map[string]any) error {
 func logLines(reader io.Reader, prefix string) {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
-		log.Printf("%s: %s", prefix, scanner.Text())
+		verbosef("%s: %s", prefix, scanner.Text())
+	}
+}
+
+func summarizeJSONRPCMessage(payload map[string]any) string {
+	method, _ := payload["method"].(string)
+	id, _ := payload["id"]
+	params, _ := payload["params"].(map[string]any)
+	if params == nil {
+		return kvSummary("method", method, "id", id)
+	}
+
+	summary := []any{"method", method, "id", id}
+	if threadID, ok := params["threadId"]; ok {
+		summary = append(summary, "thread_id", threadID)
+	}
+	if turnID, ok := params["turnId"]; ok {
+		summary = append(summary, "turn_id", turnID)
+	}
+	if expectedTurnID, ok := params["expectedTurnId"]; ok {
+		summary = append(summary, "expected_turn_id", expectedTurnID)
+	}
+	if input, ok := params["input"].([]map[string]any); ok && len(input) > 0 {
+		if text, ok := input[0]["text"].(string); ok {
+			summary = append(summary, "text", summarizeText(text))
+		}
+	}
+	return kvSummary(summary...)
+}
+
+func summarizeValue(value any) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		if message, ok := typed["message"].(string); ok {
+			return summarizeText(message)
+		}
+		return "object"
+	case string:
+		return summarizeText(typed)
+	default:
+		return fmt.Sprintf("%v", typed)
 	}
 }
 
@@ -276,6 +325,27 @@ func numberToUint64(value any) (uint64, bool) {
 		return uint64(typed), true
 	case uint64:
 		return typed, true
+	default:
+		return 0, false
+	}
+}
+
+func numberToInt64(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		if typed < math.MinInt64 || typed > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(typed), true
+	case int:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case uint64:
+		if typed > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(typed), true
 	default:
 		return 0, false
 	}
