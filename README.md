@@ -18,10 +18,11 @@ The relay keeps context per Telegram chat.
 
 - first message from a chat: create a new Codex thread
 - later messages from the same chat: reuse that same thread
+- if a second message arrives for the same chat while a turn is still running: send it as `turn/steer` into the active turn
 - `/new` or `/reset`: discard the saved mapping for that chat and start a fresh thread
 - if a saved thread cannot be resumed: fall back to a new thread automatically
 
-In practice this means the relay keeps a session going for each chat until you reset it.
+In practice this means the relay keeps a session going for each chat until you reset it, and quick follow-up messages can steer an in-flight answer instead of waiting for a brand new turn.
 
 ## Requirements
 
@@ -101,16 +102,21 @@ go run . \
 ## Telegram Commands
 
 - `/help`: show supported commands
-- `/status`: show the current transport, thread id, and working directory
+- `/status`: show the current transport, thread id, working directory, and last token usage
 - `/new`: start a new Codex thread for this Telegram chat
 - `/reset`: same as `/new`
+- `/verbose`: toggle visible intermediate output for this chat
+- `/verbose on|off|status`: explicit verbose control
 
 Any other plain-text message is forwarded to Codex.
 
 ## Current Limitations
 
 - only plain-text Telegram messages are supported
-- updates are processed sequentially
+- Telegram update intake is global, but work is processed per chat
+- one active Codex turn per chat; extra messages during that turn are treated as steering input
+- verbose mode sends visible intermediate output as separate Telegram messages while the turn is running
+- the bot shows Telegram `typing` activity while Codex is generating a reply
 - replies are sent after the Codex turn completes, not streamed incrementally to Telegram
 - thread state is local file state, not a database
 
