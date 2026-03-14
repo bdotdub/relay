@@ -12,6 +12,7 @@ import (
 )
 
 type config struct {
+	verbose                    bool
 	telegramBotToken           string
 	telegramAllowedChatIDs     map[int64]struct{}
 	telegramPollTimeoutSeconds int
@@ -43,6 +44,8 @@ func parseConfig() (config, error) {
 	var noStartAppServer bool
 	var noCodexEphemeralThreads bool
 
+	flag.BoolVar(&cfg.verbose, "verbose", envBool("RELAY_VERBOSE", false), "Enable verbose introspection logging")
+	flag.BoolVar(&cfg.verbose, "v", envBool("RELAY_VERBOSE", false), "Enable verbose introspection logging")
 	flag.StringVar(&cfg.telegramBotToken, "telegram-bot-token", envString("TELEGRAM_BOT_TOKEN", ""), "Telegram bot token")
 	flag.StringVar(&allowedChatIDs, "telegram-allowed-chat-ids", envString("TELEGRAM_ALLOWED_CHAT_IDS", ""), "Comma-separated list of allowed Telegram chat IDs")
 	flag.IntVar(&cfg.telegramPollTimeoutSeconds, "telegram-poll-timeout-seconds", envInt("TELEGRAM_POLL_TIMEOUT_SECONDS", 30), "Telegram getUpdates timeout in seconds")
