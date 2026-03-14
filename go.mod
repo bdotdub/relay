@@ -1,3 +1,3 @@
-module github.com/benny/relay
+module github.com/bdotdub/relay
 
 go 1.25.0
