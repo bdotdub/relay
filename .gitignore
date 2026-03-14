@@ -1,2 +1,4 @@
 .relay-state.json
 target/
+.gocache/
+.gotmp/

@@ -1,62 +1,91 @@
 # Telegram Codex Relay
 
-Small Rust service that relays Telegram bot messages into the Codex app server and sends Codex replies back to Telegram.
+Go service that relays messages between a Telegram bot and the Codex app server.
 
-Default behavior:
+## What It Does
 
-- starts `codex app-server` as a local subprocess over `stdio`
-- creates one Codex thread per Telegram chat
-- persists the chat-to-thread mapping in `.relay-state.json`
+- receives Telegram bot messages through long polling
+- sends each plain-text message to the Codex app server as a new turn
+- sends the Codex reply back to Telegram
+- keeps one Codex thread per Telegram chat
+- saves the chat-to-thread mapping in `.relay-state.json`
 
-Optional behavior:
+By default the relay starts `codex app-server` itself over `stdio`. It can also connect to an already-running app server over WebSocket.
 
-- connect to an already-running Codex app server over WebSocket instead of starting one
+## Conversation Model
 
-## Why the Telegram Bot API
+The relay keeps context per Telegram chat.
 
-For a Telegram bot, the Bot API is the practical transport. This relay uses long polling with `deleteWebhook`, `getUpdates`, and `sendMessage`.
+- first message from a chat: create a new Codex thread
+- later messages from the same chat: reuse that same thread
+- `/new` or `/reset`: discard the saved mapping for that chat and start a fresh thread
+- if a saved thread cannot be resumed: fall back to a new thread automatically
+
+In practice this means the relay keeps a session going for each chat until you reset it.
 
 ## Requirements
 
-- Rust 1.75+ with Cargo
+- Go 1.25+
 - a Telegram bot token from BotFather
 - Codex CLI installed and authenticated
 
-## Install
+## Build
 
 ```bash
-cargo build
+go build ./...
 ```
 
-## Configure
+## Minimal Setup
 
 ```bash
 export TELEGRAM_BOT_TOKEN="123456:abc..."
 export TELEGRAM_ALLOWED_CHAT_IDS="123456789"
+go run .
 ```
 
-Optional Codex settings:
+That starts the relay and, by default, also starts `codex app-server`.
+
+## Configuration
+
+Core settings:
+
+- `TELEGRAM_BOT_TOKEN`: required
+- `TELEGRAM_ALLOWED_CHAT_IDS`: optional comma-separated allowlist
+- `RELAY_STATE_PATH`: optional path for the chat/thread mapping file
+- `CODEX_CWD`: working directory for Codex threads
+
+Codex process settings:
+
+- `CODEX_START_APP_SERVER`: defaults to `true`
+- `CODEX_APP_SERVER_COMMAND`: defaults to `codex app-server`
+- `CODEX_APP_SERVER_WS_URL`: required only when not starting the app server locally
+
+Optional Codex turn settings:
+
+- `CODEX_MODEL`
+- `CODEX_PERSONALITY`
+- `CODEX_SANDBOX`
+- `CODEX_APPROVAL_POLICY`
+- `CODEX_SERVICE_TIER`
+- `CODEX_BASE_INSTRUCTIONS`
+- `CODEX_DEVELOPER_INSTRUCTIONS`
+- `CODEX_CONFIG_JSON`
+- `CODEX_EPHEMERAL_THREADS`
+
+All of these also have matching CLI flags. Run `go run . --help` for the full list.
+
+## Running
+
+Default mode:
 
 ```bash
-export CODEX_CWD="/Users/benny/Development/python/relay"
-export CODEX_MODEL="gpt-5-codex"
-export CODEX_APPROVAL_POLICY="never"
-export CODEX_SANDBOX="workspace-write"
+go run .
 ```
 
-## Run
-
-Default mode, which auto-starts the Codex app server:
+Explicit local app-server mode:
 
 ```bash
-cargo run -- \
-  --start-app-server
-```
-
-Equivalent explicit form:
-
-```bash
-cargo run -- \
+go run . \
   --start-app-server \
   --codex-app-server-command "codex app-server"
 ```
@@ -64,28 +93,42 @@ cargo run -- \
 External app-server mode:
 
 ```bash
-cargo run -- \
+go run . \
   --no-start-app-server \
   --codex-app-server-ws-url "ws://127.0.0.1:8765"
 ```
 
-## Bot Commands
+## Telegram Commands
 
-- `/help` shows the supported commands
-- `/status` shows the current relay status for that chat
-- `/new` or `/reset` starts a fresh Codex thread for that chat
+- `/help`: show supported commands
+- `/status`: show the current transport, thread id, and working directory
+- `/new`: start a new Codex thread for this Telegram chat
+- `/reset`: same as `/new`
 
-Any other plain text message is forwarded to Codex.
+Any other plain-text message is forwarded to Codex.
 
-## Notes
+## Current Limitations
 
-- Only plain text messages are handled right now.
-- Updates are processed sequentially; one Telegram message is relayed at a time.
-- Each Telegram chat maps to a single Codex thread.
-- If the Codex app server restarts, the relay will try to resume saved thread ids.
-- Telegram messages are chunked before sending to stay below Telegram's message size limit.
+- only plain-text Telegram messages are supported
+- updates are processed sequentially
+- replies are sent after the Codex turn completes, not streamed incrementally to Telegram
+- thread state is local file state, not a database
 
-## Upstream References
+## Verification
+
+```bash
+go test ./...
+go build ./...
+```
+
+If your environment restricts the default Go cache paths, set local cache directories before running those commands:
+
+```bash
+env GOCACHE=$PWD/.gocache GOTMPDIR=$PWD/.gotmp GOMODCACHE=$PWD/.gomodcache go test ./...
+env GOCACHE=$PWD/.gocache GOTMPDIR=$PWD/.gotmp GOMODCACHE=$PWD/.gomodcache go build ./...
+```
+
+## References
 
 - Codex app server: https://github.com/openai/codex/tree/main/codex-rs/app-server
 - Telegram Bot API: https://core.telegram.org/bots/api
