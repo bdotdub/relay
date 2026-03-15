@@ -39,7 +39,7 @@ func TestBaseThreadParamsYoloOverridesSandboxAndApproval(t *testing.T) {
 	client := &codexClient{
 		cfg: config{
 			codexCWD:            "/tmp/project",
-			codexModel:          "spark",
+			codexModel:          "gpt-5.3-codex-spark",
 			codexApprovalPolicy: "on-request",
 			codexSandbox:        "workspace-write",
 			codexPersonality:    "pragmatic",
@@ -57,7 +57,7 @@ func TestBaseThreadParamsYoloOverridesSandboxAndApproval(t *testing.T) {
 	if got := params["personality"]; got != "pragmatic" {
 		t.Fatalf("unexpected personality: %#v", got)
 	}
-	if got := params["model"]; got != "spark" {
+	if got := params["model"]; got != "gpt-5.3-codex-spark" {
 		t.Fatalf("unexpected model: %#v", got)
 	}
 }
@@ -94,7 +94,7 @@ func TestBaseThreadParamsUsesPerThreadModelOverride(t *testing.T) {
 	client := &codexClient{
 		cfg: config{
 			codexCWD:   "/tmp/project",
-			codexModel: "spark",
+			codexModel: "gpt-5.3-codex-spark",
 		},
 	}
 

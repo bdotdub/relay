@@ -489,7 +489,7 @@ func (a *relayApp) modelForChat(chatID int64) string {
 	if stringsTrimSpace(model) != "" {
 		return model
 	}
-	return defaultString(a.cfg.codexModel, "spark")
+	return defaultString(a.cfg.codexModel, "gpt-5.3-codex-spark")
 }
 
 func (a *relayApp) modelSummaryForChat(chatID int64) string {

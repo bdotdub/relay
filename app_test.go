@@ -256,7 +256,7 @@ func TestStatusShowsLastTokenUsage(t *testing.T) {
 	if !stringsContains(reply, "Execution: default (approval=never, sandbox=workspace-write)") {
 		t.Fatalf("status reply missing execution profile: %q", reply)
 	}
-	if !stringsContains(reply, "Model: spark (default)") {
+	if !stringsContains(reply, "Model: gpt-5.3-codex-spark (default)") {
 		t.Fatalf("status reply missing default model: %q", reply)
 	}
 }
@@ -313,7 +313,7 @@ func TestYoloCommandStartsFreshThreadAndUpdatesStatus(t *testing.T) {
 	if !stringsContains(status, "Execution: YOLO (approval=never, sandbox=danger-full-access)") {
 		t.Fatalf("status reply missing yolo profile: %q", status)
 	}
-	if !stringsContains(status, "Model: spark (default)") {
+	if !stringsContains(status, "Model: gpt-5.3-codex-spark (default)") {
 		t.Fatalf("status reply missing default model: %q", status)
 	}
 	if !stringsContains(status, "Thread: new-thread-1") {
@@ -417,7 +417,7 @@ func TestModelDefaultClearsOverride(t *testing.T) {
 	if len(newCalls) != 2 {
 		t.Fatalf("expected two fresh threads, got %#v", newCalls)
 	}
-	if newCalls[1].options.model != "spark" {
+	if newCalls[1].options.model != "gpt-5.3-codex-spark" {
 		t.Fatalf("expected reset to default spark model, got %#v", newCalls[1])
 	}
 	if app.modelOverrideForChat(35) != "" {
@@ -793,7 +793,7 @@ func testConfig(t *testing.T) config {
 		codexCWD:                   t.TempDir(),
 		codexStartAppServer:        true,
 		codexAppServerCommand:      []string{"codex", "app-server"},
-		codexModel:                 "spark",
+		codexModel:                 "gpt-5.3-codex-spark",
 		codexPersonality:           "pragmatic",
 		codexSandbox:               "workspace-write",
 		codexApprovalPolicy:        "never",
