@@ -17,7 +17,8 @@ type codexService interface {
 }
 
 type codexThreadOptions struct {
-	yolo bool
+	yolo  bool
+	model string
 }
 
 type codexClient struct {
@@ -507,7 +508,7 @@ func (c *codexClient) baseThreadParams(options codexThreadOptions) map[string]an
 		insertOptionalString(params, "approvalPolicy", c.cfg.codexApprovalPolicy)
 		insertOptionalString(params, "sandbox", c.cfg.codexSandbox)
 	}
-	insertOptionalString(params, "model", c.cfg.codexModel)
+	insertOptionalString(params, "model", c.modelForOptions(options))
 	insertOptionalString(params, "personality", c.cfg.codexPersonality)
 	insertOptionalString(params, "serviceTier", c.cfg.codexServiceTier)
 	insertOptionalString(params, "baseInstructions", c.cfg.codexBaseInstructions)
@@ -516,6 +517,13 @@ func (c *codexClient) baseThreadParams(options codexThreadOptions) map[string]an
 		params["config"] = merged
 	}
 	return params
+}
+
+func (c *codexClient) modelForOptions(options codexThreadOptions) string {
+	if stringsTrimSpace(options.model) != "" {
+		return options.model
+	}
+	return c.cfg.codexModel
 }
 
 func (c *codexClient) newThreadParams(options codexThreadOptions) map[string]any {

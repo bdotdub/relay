@@ -256,6 +256,9 @@ func TestStatusShowsLastTokenUsage(t *testing.T) {
 	if !stringsContains(reply, "Execution: default (approval=never, sandbox=workspace-write)") {
 		t.Fatalf("status reply missing execution profile: %q", reply)
 	}
+	if !stringsContains(reply, "Model: spark (default)") {
+		t.Fatalf("status reply missing default model: %q", reply)
+	}
 }
 
 func TestYoloCommandStartsFreshThreadAndUpdatesStatus(t *testing.T) {
@@ -310,8 +313,115 @@ func TestYoloCommandStartsFreshThreadAndUpdatesStatus(t *testing.T) {
 	if !stringsContains(status, "Execution: YOLO (approval=never, sandbox=danger-full-access)") {
 		t.Fatalf("status reply missing yolo profile: %q", status)
 	}
+	if !stringsContains(status, "Model: spark (default)") {
+		t.Fatalf("status reply missing default model: %q", status)
+	}
 	if !stringsContains(status, "Thread: new-thread-1") {
 		t.Fatalf("status reply missing yolo thread id: %q", status)
+	}
+}
+
+func TestModelCommandStartsFreshThreadAndUpdatesStatus(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 1,
+		Message: &telegramMessage{
+			MessageID: 556,
+			Chat:      telegramChat{ID: 34},
+			Text:      "/model gpt-5",
+		},
+	}); err != nil {
+		t.Fatalf("handle model command: %v", err)
+	}
+
+	waitFor(t, "model ack", func() bool {
+		return telegram.messageCount() == 1
+	})
+
+	reply := telegram.messages()[0].text
+	if !stringsContains(reply, "Model set to gpt-5") || !stringsContains(reply, "thread_id=new-thread-1") {
+		t.Fatalf("unexpected model ack: %q", reply)
+	}
+
+	newCalls := codex.newThreadCallsSnapshot()
+	if len(newCalls) != 1 || newCalls[0].options.model != "gpt-5" {
+		t.Fatalf("expected model override new thread call, got %#v", newCalls)
+	}
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 2,
+		Message: &telegramMessage{
+			MessageID: 557,
+			Chat:      telegramChat{ID: 34},
+			Text:      "/status",
+		},
+	}); err != nil {
+		t.Fatalf("handle status command: %v", err)
+	}
+
+	waitFor(t, "status reply", func() bool {
+		return telegram.messageCount() == 2
+	})
+
+	status := telegram.messages()[1].text
+	if !stringsContains(status, "Model: gpt-5 (override)") {
+		t.Fatalf("status reply missing model override: %q", status)
+	}
+	if !stringsContains(status, "Thread: new-thread-1") {
+		t.Fatalf("status reply missing model thread id: %q", status)
+	}
+}
+
+func TestModelDefaultClearsOverride(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+
+	for _, update := range []telegramUpdate{
+		{
+			UpdateID: 1,
+			Message: &telegramMessage{
+				MessageID: 566,
+				Chat:      telegramChat{ID: 35},
+				Text:      "/model gpt-5",
+			},
+		},
+		{
+			UpdateID: 2,
+			Message: &telegramMessage{
+				MessageID: 567,
+				Chat:      telegramChat{ID: 35},
+				Text:      "/model default",
+			},
+		},
+	} {
+		if err := app.handleUpdate(ctx, update); err != nil {
+			t.Fatalf("handle update %d: %v", update.UpdateID, err)
+		}
+	}
+
+	waitFor(t, "model reset ack", func() bool {
+		return telegram.messageCount() == 2
+	})
+
+	newCalls := codex.newThreadCallsSnapshot()
+	if len(newCalls) != 2 {
+		t.Fatalf("expected two fresh threads, got %#v", newCalls)
+	}
+	if newCalls[1].options.model != "spark" {
+		t.Fatalf("expected reset to default spark model, got %#v", newCalls[1])
+	}
+	if app.modelOverrideForChat(35) != "" {
+		t.Fatalf("expected model override to be cleared, got %q", app.modelOverrideForChat(35))
 	}
 }
 
@@ -397,6 +507,21 @@ func TestLoadStateSupportsLegacyAndNewFormats(t *testing.T) {
 	}
 	if !newApp.yoloForChat(9) {
 		t.Fatal("new state should enable yolo")
+	}
+
+	modelApp := newRelayAppWithServices(cfg, &fakeTelegramService{}, newFakeCodexService())
+	modelData := []byte("{\n  \"threads\": {\n    \"10\": \"thread-10\"\n  },\n  \"yolo_by_chat\": {\n    \"10\": true\n  },\n  \"model_by_chat\": {\n    \"10\": \"gpt-5\"\n  }\n}\n")
+	if err := os.WriteFile(cfg.statePath, modelData, 0o644); err != nil {
+		t.Fatalf("write model state: %v", err)
+	}
+	if err := modelApp.loadState(); err != nil {
+		t.Fatalf("load model state: %v", err)
+	}
+	if got := modelApp.threadIDForChat(10); got != "thread-10" {
+		t.Fatalf("unexpected model-format thread id: %q", got)
+	}
+	if got := modelApp.modelOverrideForChat(10); got != "gpt-5" {
+		t.Fatalf("unexpected model override: %q", got)
 	}
 }
 
@@ -668,6 +793,7 @@ func testConfig(t *testing.T) config {
 		codexCWD:                   t.TempDir(),
 		codexStartAppServer:        true,
 		codexAppServerCommand:      []string{"codex", "app-server"},
+		codexModel:                 "spark",
 		codexPersonality:           "pragmatic",
 		codexSandbox:               "workspace-write",
 		codexApprovalPolicy:        "never",

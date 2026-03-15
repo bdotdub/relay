@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -27,6 +28,7 @@ type relayApp struct {
 	threadIDsByChat map[string]string
 	verboseByChat   map[int64]bool
 	yoloByChat      map[int64]bool
+	modelByChat     map[int64]string
 	lastUsageByChat map[int64]tokenUsage
 
 	workersMu sync.Mutex
@@ -55,8 +57,9 @@ type activeChatTurn struct {
 }
 
 type relayState struct {
-	Threads    map[string]string `json:"threads,omitempty"`
-	YoloByChat map[string]bool   `json:"yolo_by_chat,omitempty"`
+	Threads     map[string]string `json:"threads,omitempty"`
+	YoloByChat  map[string]bool   `json:"yolo_by_chat,omitempty"`
+	ModelByChat map[string]string `json:"model_by_chat,omitempty"`
 }
 
 func newRelayApp(cfg config) (*relayApp, error) {
@@ -76,6 +79,7 @@ func newRelayAppWithServices(cfg config, telegram telegramService, codex codexSe
 		threadIDsByChat: map[string]string{},
 		verboseByChat:   map[int64]bool{},
 		yoloByChat:      map[int64]bool{},
+		modelByChat:     map[int64]string{},
 		lastUsageByChat: map[int64]tokenUsage{},
 		workers:         map[int64]*chatWorker{},
 	}
@@ -351,7 +355,7 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 		if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {
 			return err
 		}
-		return w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("Started a new Codex thread in %s mode.\nthread_id=%s", w.app.executionModeName(w.chatID), threadID))
+		return w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("Started a new Codex thread in %s mode with model %s.\nthread_id=%s", w.app.executionModeName(w.chatID), w.app.modelForChat(w.chatID), threadID))
 	case "/status":
 		threadID := w.app.threadIDForChat(w.chatID)
 		if threadID == "" {
@@ -361,9 +365,9 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 		if !w.app.cfg.codexStartAppServer {
 			mode = "websocket"
 		}
-		return w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("Transport: %s\nExecution: %s\nThread: %s\nCWD: %s\nTokens: %s", mode, w.app.executionProfileSummary(w.chatID), threadID, w.app.cfg.codexCWD, formatTokenUsage(w.app.lastUsageForChat(w.chatID))))
+		return w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("Transport: %s\nExecution: %s\nModel: %s\nThread: %s\nCWD: %s\nTokens: %s", mode, w.app.executionProfileSummary(w.chatID), w.app.modelSummaryForChat(w.chatID), threadID, w.app.cfg.codexCWD, formatTokenUsage(w.app.lastUsageForChat(w.chatID))))
 	case "/help":
-		return w.app.telegram.sendMessage(ctx, w.chatID, "Send any text message to relay it to Codex.\n/new or /reset starts a fresh Codex thread.\n/status shows the current thread mapping, execution mode, and last token usage.\n/verbose toggles intermediate visible output for this chat.\n/yolo toggles YOLO execution mode for this chat and starts a fresh thread.")
+		return w.app.telegram.sendMessage(ctx, w.chatID, "Send any text message to relay it to Codex.\n/new or /reset starts a fresh Codex thread.\n/status shows the current thread mapping, execution mode, model, and last token usage.\n/verbose toggles intermediate visible output for this chat.\n/yolo toggles YOLO execution mode for this chat and starts a fresh thread.\n/model sets a per-chat model override and starts a fresh thread.")
 	case "/verbose":
 		enabled, message := w.app.toggleVerboseForChat(w.chatID, text)
 		if message == "" {
@@ -389,7 +393,23 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 		if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {
 			return err
 		}
-		return w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("YOLO mode %s for this chat. Started a fresh Codex thread.\nthread_id=%s", enabledDisabled(enabled), threadID))
+		return w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("YOLO mode %s for this chat. Started a fresh Codex thread with model %s.\nthread_id=%s", enabledDisabled(enabled), w.app.modelForChat(w.chatID), threadID))
+	case "/model":
+		model, changed, message := w.app.setModelForChat(w.chatID, text)
+		if message != "" {
+			return w.app.telegram.sendMessage(ctx, w.chatID, message)
+		}
+		if !changed {
+			return w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("Model is already %s for this chat.", w.app.modelSummaryForChat(w.chatID)))
+		}
+		threadID, err := w.app.codex.newThread(ctx, w.app.threadOptionsForChat(w.chatID))
+		if err != nil {
+			return err
+		}
+		if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {
+			return err
+		}
+		return w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("Model set to %s for this chat. Started a fresh Codex thread.\nthread_id=%s", model, threadID))
 	default:
 		return w.app.telegram.sendMessage(ctx, w.chatID, "Unknown command. Use /help for the supported commands.")
 	}
@@ -426,6 +446,12 @@ func (a *relayApp) yoloForChat(chatID int64) bool {
 	return a.yoloByChat[chatID]
 }
 
+func (a *relayApp) modelOverrideForChat(chatID int64) string {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.modelByChat[chatID]
+}
+
 func (a *relayApp) lastUsageForChat(chatID int64) *tokenUsage {
 	a.stateMu.RLock()
 	defer a.stateMu.RUnlock()
@@ -438,7 +464,10 @@ func (a *relayApp) lastUsageForChat(chatID int64) *tokenUsage {
 }
 
 func (a *relayApp) threadOptionsForChat(chatID int64) codexThreadOptions {
-	return codexThreadOptions{yolo: a.yoloForChat(chatID)}
+	return codexThreadOptions{
+		yolo:  a.yoloForChat(chatID),
+		model: a.modelForChat(chatID),
+	}
 }
 
 func (a *relayApp) executionModeName(chatID int64) string {
@@ -453,6 +482,22 @@ func (a *relayApp) executionProfileSummary(chatID int64) string {
 		return "YOLO (approval=never, sandbox=danger-full-access)"
 	}
 	return fmt.Sprintf("default (approval=%s, sandbox=%s)", defaultString(a.cfg.codexApprovalPolicy, "(unset)"), defaultString(a.cfg.codexSandbox, "(unset)"))
+}
+
+func (a *relayApp) modelForChat(chatID int64) string {
+	model := a.modelOverrideForChat(chatID)
+	if stringsTrimSpace(model) != "" {
+		return model
+	}
+	return defaultString(a.cfg.codexModel, "spark")
+}
+
+func (a *relayApp) modelSummaryForChat(chatID int64) string {
+	model := a.modelForChat(chatID)
+	if stringsTrimSpace(a.modelOverrideForChat(chatID)) == "" {
+		return fmt.Sprintf("%s (default)", model)
+	}
+	return fmt.Sprintf("%s (override)", model)
 }
 
 func (a *relayApp) toggleVerboseForChat(chatID int64, text string) (bool, string) {
@@ -534,6 +579,49 @@ func (a *relayApp) toggleYoloForChat(chatID int64, text string) (bool, bool, str
 	return next, true, ""
 }
 
+func (a *relayApp) setModelForChat(chatID int64, text string) (string, bool, string) {
+	command := stringsTrimSpace(text)
+	arg := ""
+	if index := stringsIndexAny(command, " \t\r\n"); index >= 0 {
+		arg = stringsTrimSpace(command[index+1:])
+	}
+	if arg == "" || arg == "status" {
+		return a.modelSummaryForChat(chatID), false, fmt.Sprintf("Model is %s for this chat.", a.modelSummaryForChat(chatID))
+	}
+
+	nextOverride := arg
+	switch strings.ToLower(arg) {
+	case "default", "reset", "clear":
+		nextOverride = ""
+	}
+
+	a.stateMu.Lock()
+	currentOverride := a.modelByChat[chatID]
+	if currentOverride == nextOverride {
+		a.stateMu.Unlock()
+		return a.modelSummaryForChat(chatID), false, ""
+	}
+	if nextOverride == "" {
+		delete(a.modelByChat, chatID)
+	} else {
+		a.modelByChat[chatID] = nextOverride
+	}
+	a.stateMu.Unlock()
+
+	verbosef("chat model changed %s", kvSummary("chat_id", chatID, "model", defaultString(nextOverride, a.cfg.codexModel)))
+	if err := a.saveState(); err != nil {
+		a.stateMu.Lock()
+		if currentOverride == "" {
+			delete(a.modelByChat, chatID)
+		} else {
+			a.modelByChat[chatID] = currentOverride
+		}
+		a.stateMu.Unlock()
+		return a.modelSummaryForChat(chatID), false, fmt.Sprintf("Failed to update model: %v", err)
+	}
+	return a.modelForChat(chatID), true, ""
+}
+
 func (a *relayApp) setThreadIDForChat(chatID int64, threadID string) error {
 	chatKey := fmt.Sprintf("%d", chatID)
 	a.stateMu.Lock()
@@ -566,6 +654,7 @@ func (a *relayApp) loadState() error {
 			a.stateMu.Lock()
 			a.threadIDsByChat = map[string]string{}
 			a.yoloByChat = map[int64]bool{}
+			a.modelByChat = map[int64]string{}
 			a.stateMu.Unlock()
 			return nil
 		}
@@ -573,12 +662,13 @@ func (a *relayApp) loadState() error {
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err == nil {
-		if _, hasThreads := raw["threads"]; hasThreads || raw["yolo_by_chat"] != nil {
+		if _, hasThreads := raw["threads"]; hasThreads || raw["yolo_by_chat"] != nil || raw["model_by_chat"] != nil {
 			var state relayState
 			if err := json.Unmarshal(data, &state); err != nil {
 				a.stateMu.Lock()
 				a.threadIDsByChat = map[string]string{}
 				a.yoloByChat = map[int64]bool{}
+				a.modelByChat = map[int64]string{}
 				a.stateMu.Unlock()
 				return nil
 			}
@@ -588,6 +678,7 @@ func (a *relayApp) loadState() error {
 				a.threadIDsByChat = map[string]string{}
 			}
 			a.yoloByChat = decodeBoolMap(state.YoloByChat)
+			a.modelByChat = decodeStringMap(state.ModelByChat)
 			a.stateMu.Unlock()
 			return nil
 		}
@@ -598,12 +689,14 @@ func (a *relayApp) loadState() error {
 		a.stateMu.Lock()
 		a.threadIDsByChat = map[string]string{}
 		a.yoloByChat = map[int64]bool{}
+		a.modelByChat = map[int64]string{}
 		a.stateMu.Unlock()
 		return nil
 	}
 	a.stateMu.Lock()
 	a.threadIDsByChat = mapping
 	a.yoloByChat = map[int64]bool{}
+	a.modelByChat = map[int64]string{}
 	a.stateMu.Unlock()
 	return nil
 }
@@ -615,8 +708,9 @@ func (a *relayApp) saveState() error {
 
 	a.stateMu.RLock()
 	state := relayState{
-		Threads:    a.threadIDsByChat,
-		YoloByChat: encodeBoolMap(a.yoloByChat),
+		Threads:     a.threadIDsByChat,
+		YoloByChat:  encodeBoolMap(a.yoloByChat),
+		ModelByChat: encodeStringMap(a.modelByChat),
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	a.stateMu.RUnlock()
@@ -661,6 +755,43 @@ func decodeBoolMap(values map[string]bool) map[int64]bool {
 			continue
 		}
 		decoded[chatID] = true
+	}
+	return decoded
+}
+
+func encodeStringMap(values map[int64]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	encoded := make(map[string]string, len(values))
+	for chatID, value := range values {
+		value = stringsTrimSpace(value)
+		if value == "" {
+			continue
+		}
+		encoded[fmt.Sprintf("%d", chatID)] = value
+	}
+	if len(encoded) == 0 {
+		return nil
+	}
+	return encoded
+}
+
+func decodeStringMap(values map[string]string) map[int64]string {
+	if len(values) == 0 {
+		return map[int64]string{}
+	}
+	decoded := make(map[int64]string, len(values))
+	for rawChatID, value := range values {
+		value = stringsTrimSpace(value)
+		if value == "" {
+			continue
+		}
+		var chatID int64
+		if _, err := fmt.Sscanf(rawChatID, "%d", &chatID); err != nil {
+			continue
+		}
+		decoded[chatID] = value
 	}
 	return decoded
 }

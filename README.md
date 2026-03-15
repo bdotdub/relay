@@ -63,7 +63,7 @@ Codex process settings:
 
 Optional Codex turn settings:
 
-- `CODEX_MODEL`
+- `CODEX_MODEL`: defaults to `spark`
 - `CODEX_PERSONALITY`
 - `CODEX_SANDBOX`
 - `CODEX_APPROVAL_POLICY`
@@ -108,13 +108,16 @@ go run . \
 ## Telegram Commands
 
 - `/help`: show supported commands
-- `/status`: show the current transport, thread id, working directory, and last token usage
+- `/status`: show the current transport, execution mode, model, thread id, working directory, and last token usage
 - `/new`: start a new Codex thread for this Telegram chat
 - `/reset`: same as `/new`
 - `/verbose`: toggle visible intermediate output for this chat
 - `/verbose on|off|status`: explicit verbose control
 - `/yolo`: toggle YOLO execution mode for this chat and start a fresh thread
 - `/yolo on|off|status`: explicit YOLO control
+- `/model`: show the current model for this chat
+- `/model <name>`: set a per-chat model override and start a fresh thread
+- `/model default`: clear the per-chat override and use the configured default model
 
 Any other plain-text message is forwarded to Codex.
 
@@ -125,9 +128,10 @@ Any other plain-text message is forwarded to Codex.
 - one active Codex turn per chat; extra messages during that turn are treated as steering input
 - verbose mode sends visible intermediate output as separate Telegram messages while the turn is running
 - YOLO mode runs that chat with `approval=never` and `sandbox=danger-full-access`
+- model selection is optimistic; `/model <name>` forwards that string to Codex and relies on the server to accept it
 - the bot shows Telegram `typing` activity while Codex is generating a reply
 - replies are sent after the Codex turn completes, not streamed incrementally to Telegram
-- thread state and per-chat YOLO mode are local file state, not a database
+- thread state, per-chat YOLO mode, and per-chat model overrides are local file state, not a database
 
 ## Verification
 

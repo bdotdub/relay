@@ -61,7 +61,7 @@ func parseConfig() (config, error) {
 	flag.BoolVar(&noStartAppServer, "no-start-app-server", false, "Do not start a local Codex app-server subprocess")
 	flag.StringVar(&codexAppServerCommand, "codex-app-server-command", envString("CODEX_APP_SERVER_COMMAND", "codex app-server"), "Command used to start the Codex app server")
 	flag.StringVar(&cfg.codexAppServerWSURL, "codex-app-server-ws-url", envString("CODEX_APP_SERVER_WS_URL", ""), "WebSocket URL for an already-running Codex app server")
-	flag.StringVar(&cfg.codexModel, "codex-model", envString("CODEX_MODEL", ""), "Optional Codex model override")
+	flag.StringVar(&cfg.codexModel, "codex-model", envString("CODEX_MODEL", "spark"), "Codex model override")
 	flag.StringVar(&cfg.codexPersonality, "codex-personality", envString("CODEX_PERSONALITY", "pragmatic"), "Optional Codex personality override")
 	flag.StringVar(&cfg.codexSandbox, "codex-sandbox", envString("CODEX_SANDBOX", "workspace-write"), "Codex sandbox mode")
 	flag.StringVar(&cfg.codexApprovalPolicy, "codex-approval-policy", envString("CODEX_APPROVAL_POLICY", "never"), "Codex approval policy")

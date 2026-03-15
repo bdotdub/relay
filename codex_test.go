@@ -39,6 +39,7 @@ func TestBaseThreadParamsYoloOverridesSandboxAndApproval(t *testing.T) {
 	client := &codexClient{
 		cfg: config{
 			codexCWD:            "/tmp/project",
+			codexModel:          "spark",
 			codexApprovalPolicy: "on-request",
 			codexSandbox:        "workspace-write",
 			codexPersonality:    "pragmatic",
@@ -55,6 +56,9 @@ func TestBaseThreadParamsYoloOverridesSandboxAndApproval(t *testing.T) {
 	}
 	if got := params["personality"]; got != "pragmatic" {
 		t.Fatalf("unexpected personality: %#v", got)
+	}
+	if got := params["model"]; got != "spark" {
+		t.Fatalf("unexpected model: %#v", got)
 	}
 }
 
@@ -83,5 +87,20 @@ func TestMergedThreadConfigDropsPermissionProfileInYoloMode(t *testing.T) {
 	}
 	if got := yolo["custom"]; got != "value" {
 		t.Fatalf("expected custom config to be preserved, got %#v", got)
+	}
+}
+
+func TestBaseThreadParamsUsesPerThreadModelOverride(t *testing.T) {
+	client := &codexClient{
+		cfg: config{
+			codexCWD:   "/tmp/project",
+			codexModel: "spark",
+		},
+	}
+
+	params := client.baseThreadParams(codexThreadOptions{model: "gpt-5"})
+
+	if got := params["model"]; got != "gpt-5" {
+		t.Fatalf("unexpected model: %#v", got)
 	}
 }
