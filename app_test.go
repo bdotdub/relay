@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -252,6 +253,151 @@ func TestStatusShowsLastTokenUsage(t *testing.T) {
 	if !stringsContains(reply, "Tokens: input=120 output=34 total=154") {
 		t.Fatalf("status reply missing token usage: %q", reply)
 	}
+	if !stringsContains(reply, "Execution: default (approval=never, sandbox=workspace-write)") {
+		t.Fatalf("status reply missing execution profile: %q", reply)
+	}
+}
+
+func TestYoloCommandStartsFreshThreadAndUpdatesStatus(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 1,
+		Message: &telegramMessage{
+			MessageID: 551,
+			Chat:      telegramChat{ID: 32},
+			Text:      "/yolo on",
+		},
+	}); err != nil {
+		t.Fatalf("handle yolo command: %v", err)
+	}
+
+	waitFor(t, "yolo ack", func() bool {
+		return telegram.messageCount() == 1
+	})
+
+	reply := telegram.messages()[0].text
+	if !stringsContains(reply, "YOLO mode enabled") || !stringsContains(reply, "thread_id=new-thread-1") {
+		t.Fatalf("unexpected yolo ack: %q", reply)
+	}
+
+	newCalls := codex.newThreadCallsSnapshot()
+	if len(newCalls) != 1 || !newCalls[0].options.yolo {
+		t.Fatalf("expected yolo new thread call, got %#v", newCalls)
+	}
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 2,
+		Message: &telegramMessage{
+			MessageID: 552,
+			Chat:      telegramChat{ID: 32},
+			Text:      "/status",
+		},
+	}); err != nil {
+		t.Fatalf("handle status command: %v", err)
+	}
+
+	waitFor(t, "status reply", func() bool {
+		return telegram.messageCount() == 2
+	})
+
+	status := telegram.messages()[1].text
+	if !stringsContains(status, "Execution: YOLO (approval=never, sandbox=danger-full-access)") {
+		t.Fatalf("status reply missing yolo profile: %q", status)
+	}
+	if !stringsContains(status, "Thread: new-thread-1") {
+		t.Fatalf("status reply missing yolo thread id: %q", status)
+	}
+}
+
+func TestYoloModeChangesThreadOptionsForSubsequentTurns(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 1,
+		Message: &telegramMessage{
+			MessageID: 561,
+			Chat:      telegramChat{ID: 33},
+			Text:      "/yolo on",
+		},
+	}); err != nil {
+		t.Fatalf("handle yolo command: %v", err)
+	}
+
+	waitFor(t, "yolo ack", func() bool {
+		return telegram.messageCount() == 1
+	})
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 2,
+		Message: &telegramMessage{
+			MessageID: 562,
+			Chat:      telegramChat{ID: 33},
+			Text:      "Ship it",
+		},
+	}); err != nil {
+		t.Fatalf("handle message: %v", err)
+	}
+
+	waitFor(t, "turn start", func() bool {
+		return codex.startCount() == 1
+	})
+
+	ensureCalls := codex.ensureThreadCallsSnapshot()
+	if len(ensureCalls) != 1 || ensureCalls[0].threadID != "new-thread-1" || !ensureCalls[0].options.yolo {
+		t.Fatalf("expected yolo ensureThread call for the fresh thread, got %#v", ensureCalls)
+	}
+
+	startCalls := codex.startCallsSnapshot()
+	if len(startCalls) != 1 || startCalls[0].threadID != "new-thread-1" {
+		t.Fatalf("unexpected start calls: %#v", startCalls)
+	}
+
+	codex.finishTurn("new-thread-1", turnResult{text: "Done"})
+}
+
+func TestLoadStateSupportsLegacyAndNewFormats(t *testing.T) {
+	cfg := testConfig(t)
+
+	legacyApp := newRelayAppWithServices(cfg, &fakeTelegramService{}, newFakeCodexService())
+	legacyData := []byte("{\n  \"7\": \"thread-7\"\n}\n")
+	if err := os.WriteFile(cfg.statePath, legacyData, 0o644); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+	if err := legacyApp.loadState(); err != nil {
+		t.Fatalf("load legacy state: %v", err)
+	}
+	if got := legacyApp.threadIDForChat(7); got != "thread-7" {
+		t.Fatalf("unexpected legacy thread id: %q", got)
+	}
+	if legacyApp.yoloForChat(7) {
+		t.Fatal("legacy state should not enable yolo")
+	}
+
+	newApp := newRelayAppWithServices(cfg, &fakeTelegramService{}, newFakeCodexService())
+	newData := []byte("{\n  \"threads\": {\n    \"9\": \"thread-9\"\n  },\n  \"yolo_by_chat\": {\n    \"9\": true\n  }\n}\n")
+	if err := os.WriteFile(cfg.statePath, newData, 0o644); err != nil {
+		t.Fatalf("write new state: %v", err)
+	}
+	if err := newApp.loadState(); err != nil {
+		t.Fatalf("load new state: %v", err)
+	}
+	if got := newApp.threadIDForChat(9); got != "thread-9" {
+		t.Fatalf("unexpected new-format thread id: %q", got)
+	}
+	if !newApp.yoloForChat(9) {
+		t.Fatal("new state should enable yolo")
+	}
 }
 
 func TestActiveTurnSendsTypingAction(t *testing.T) {
@@ -358,17 +504,24 @@ func (f *fakeTelegramService) chatActions() []sentTelegramAction {
 }
 
 type fakeCodexService struct {
-	mu         sync.Mutex
-	turns      map[string]chan turnResult
-	events     map[string]chan turnStreamEvent
-	startCalls []fakeStartCall
-	steerCalls []fakeSteerCall
-	nextThread int
+	mu                sync.Mutex
+	turns             map[string]chan turnResult
+	events            map[string]chan turnStreamEvent
+	newThreadCalls    []fakeThreadCall
+	ensureThreadCalls []fakeThreadCall
+	startCalls        []fakeStartCall
+	steerCalls        []fakeSteerCall
+	nextThread        int
 }
 
 type fakeStartCall struct {
 	threadID string
 	text     string
+}
+
+type fakeThreadCall struct {
+	threadID string
+	options  codexThreadOptions
 }
 
 type fakeSteerCall struct {
@@ -388,21 +541,37 @@ func (f *fakeCodexService) close() error {
 	return nil
 }
 
-func (f *fakeCodexService) newThread(ctx context.Context) (string, error) {
+func (f *fakeCodexService) newThread(ctx context.Context, options codexThreadOptions) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextThread++
-	return fmt.Sprintf("new-thread-%d", f.nextThread), nil
+	threadID := fmt.Sprintf("new-thread-%d", f.nextThread)
+	f.newThreadCalls = append(f.newThreadCalls, fakeThreadCall{
+		threadID: threadID,
+		options:  options,
+	})
+	return threadID, nil
 }
 
-func (f *fakeCodexService) ensureThread(ctx context.Context, threadID string) (string, error) {
+func (f *fakeCodexService) ensureThread(ctx context.Context, threadID string, options codexThreadOptions) (string, error) {
 	if threadID != "" {
+		f.mu.Lock()
+		f.ensureThreadCalls = append(f.ensureThreadCalls, fakeThreadCall{
+			threadID: threadID,
+			options:  options,
+		})
+		f.mu.Unlock()
 		return threadID, nil
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nextThread++
-	return fmt.Sprintf("thread-%d", f.nextThread), nil
+	threadID = fmt.Sprintf("thread-%d", f.nextThread)
+	f.newThreadCalls = append(f.newThreadCalls, fakeThreadCall{
+		threadID: threadID,
+		options:  options,
+	})
+	return threadID, nil
 }
 
 func (f *fakeCodexService) startTurn(ctx context.Context, threadID string, userText string) (*codexTurnHandle, error) {
@@ -463,6 +632,30 @@ func (f *fakeCodexService) steerCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.steerCalls)
+}
+
+func (f *fakeCodexService) newThreadCallsSnapshot() []fakeThreadCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]fakeThreadCall, len(f.newThreadCalls))
+	copy(out, f.newThreadCalls)
+	return out
+}
+
+func (f *fakeCodexService) ensureThreadCallsSnapshot() []fakeThreadCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]fakeThreadCall, len(f.ensureThreadCalls))
+	copy(out, f.ensureThreadCalls)
+	return out
+}
+
+func (f *fakeCodexService) startCallsSnapshot() []fakeStartCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]fakeStartCall, len(f.startCalls))
+	copy(out, f.startCalls)
+	return out
 }
 
 func testConfig(t *testing.T) config {

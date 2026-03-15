@@ -73,6 +73,12 @@ Optional Codex turn settings:
 - `CODEX_CONFIG_JSON`
 - `CODEX_EPHEMERAL_THREADS`
 
+Codex permission profile (optional; merged into thread config):
+
+- `CODEX_NETWORK_ENABLED`: set to `true` or `false` to allow or deny network access
+- `CODEX_FS_READ`: comma-separated absolute paths the agent may read
+- `CODEX_FS_WRITE`: comma-separated absolute paths the agent may write
+
 All of these also have matching CLI flags. Run `go run . --help` for the full list.
 
 ## Running
@@ -107,6 +113,8 @@ go run . \
 - `/reset`: same as `/new`
 - `/verbose`: toggle visible intermediate output for this chat
 - `/verbose on|off|status`: explicit verbose control
+- `/yolo`: toggle YOLO execution mode for this chat and start a fresh thread
+- `/yolo on|off|status`: explicit YOLO control
 
 Any other plain-text message is forwarded to Codex.
 
@@ -116,9 +124,10 @@ Any other plain-text message is forwarded to Codex.
 - Telegram update intake is global, but work is processed per chat
 - one active Codex turn per chat; extra messages during that turn are treated as steering input
 - verbose mode sends visible intermediate output as separate Telegram messages while the turn is running
+- YOLO mode runs that chat with `approval=never` and `sandbox=danger-full-access`
 - the bot shows Telegram `typing` activity while Codex is generating a reply
 - replies are sent after the Codex turn completes, not streamed incrementally to Telegram
-- thread state is local file state, not a database
+- thread state and per-chat YOLO mode are local file state, not a database
 
 ## Verification
 

@@ -10,10 +10,14 @@ import (
 
 type codexService interface {
 	close() error
-	newThread(ctx context.Context) (string, error)
-	ensureThread(ctx context.Context, threadID string) (string, error)
+	newThread(ctx context.Context, options codexThreadOptions) (string, error)
+	ensureThread(ctx context.Context, threadID string, options codexThreadOptions) (string, error)
 	startTurn(ctx context.Context, threadID string, userText string) (*codexTurnHandle, error)
 	steerTurn(ctx context.Context, threadID string, turnID string, userText string) error
+}
+
+type codexThreadOptions struct {
+	yolo bool
 }
 
 type codexClient struct {
@@ -108,8 +112,8 @@ func (c *codexClient) initialize(ctx context.Context) error {
 	return c.rpc.notify("initialized", nil)
 }
 
-func (c *codexClient) newThread(ctx context.Context) (string, error) {
-	response, err := c.rpc.request(ctx, "thread/start", c.newThreadParams())
+func (c *codexClient) newThread(ctx context.Context, options codexThreadOptions) (string, error) {
+	response, err := c.rpc.request(ctx, "thread/start", c.newThreadParams(options))
 	if err != nil {
 		return "", err
 	}
@@ -124,9 +128,9 @@ func (c *codexClient) newThread(ctx context.Context) (string, error) {
 	return threadID, nil
 }
 
-func (c *codexClient) ensureThread(ctx context.Context, threadID string) (string, error) {
+func (c *codexClient) ensureThread(ctx context.Context, threadID string, options codexThreadOptions) (string, error) {
 	if threadID == "" {
-		return c.newThread(ctx)
+		return c.newThread(ctx, options)
 	}
 	c.loadedMu.Lock()
 	_, ok := c.loadedThreads[threadID]
@@ -135,7 +139,7 @@ func (c *codexClient) ensureThread(ctx context.Context, threadID string) (string
 		return threadID, nil
 	}
 
-	params := c.resumeThreadParams()
+	params := c.resumeThreadParams(options)
 	params["threadId"] = threadID
 	if _, err := c.rpc.request(ctx, "thread/resume", params); err == nil {
 		c.loadedMu.Lock()
@@ -145,7 +149,7 @@ func (c *codexClient) ensureThread(ctx context.Context, threadID string) (string
 		return threadID, nil
 	}
 	verbosef("codex thread resume failed; starting new thread %s", kvSummary("thread_id", threadID))
-	return c.newThread(ctx)
+	return c.newThread(ctx, options)
 }
 
 func (c *codexClient) startTurn(ctx context.Context, threadID string, userText string) (*codexTurnHandle, error) {
@@ -492,31 +496,91 @@ func extractUsageCount(values map[string]any, keys ...string) (int64, bool) {
 	return 0, false
 }
 
-func (c *codexClient) baseThreadParams() map[string]any {
+func (c *codexClient) baseThreadParams(options codexThreadOptions) map[string]any {
 	params := map[string]any{
 		"cwd": c.cfg.codexCWD,
 	}
-	insertOptionalString(params, "approvalPolicy", c.cfg.codexApprovalPolicy)
-	insertOptionalString(params, "sandbox", c.cfg.codexSandbox)
+	if options.yolo {
+		params["approvalPolicy"] = "never"
+		params["sandbox"] = "danger-full-access"
+	} else {
+		insertOptionalString(params, "approvalPolicy", c.cfg.codexApprovalPolicy)
+		insertOptionalString(params, "sandbox", c.cfg.codexSandbox)
+	}
 	insertOptionalString(params, "model", c.cfg.codexModel)
 	insertOptionalString(params, "personality", c.cfg.codexPersonality)
 	insertOptionalString(params, "serviceTier", c.cfg.codexServiceTier)
 	insertOptionalString(params, "baseInstructions", c.cfg.codexBaseInstructions)
 	insertOptionalString(params, "developerInstructions", c.cfg.codexDeveloperInstructions)
-	if c.cfg.codexConfig != nil {
-		params["config"] = c.cfg.codexConfig
+	if merged := c.mergedThreadConfig(options); len(merged) > 0 {
+		params["config"] = merged
 	}
 	return params
 }
 
-func (c *codexClient) newThreadParams() map[string]any {
-	params := c.baseThreadParams()
+func (c *codexClient) newThreadParams(options codexThreadOptions) map[string]any {
+	params := c.baseThreadParams(options)
 	params["ephemeral"] = c.cfg.codexEphemeralThreads
 	return params
 }
 
-func (c *codexClient) resumeThreadParams() map[string]any {
-	return c.baseThreadParams()
+func (c *codexClient) resumeThreadParams(options codexThreadOptions) map[string]any {
+	return c.baseThreadParams(options)
+}
+
+// mergedThreadConfig returns the thread config map, merging in a permission profile when
+// codexNetworkEnabled, codexFsReadPaths, or codexFsWritePaths are set. Uses snake_case keys
+// to match the Codex protocol (file_system, network, permission_profile).
+func (c *codexClient) mergedThreadConfig(options codexThreadOptions) map[string]any {
+	merged := make(map[string]any)
+	if c.cfg.codexConfig != nil {
+		for k, v := range c.cfg.codexConfig {
+			if options.yolo && k == "permission_profile" {
+				continue
+			}
+			merged[k] = v
+		}
+	}
+	profile := c.buildPermissionProfile(options)
+	if profile != nil {
+		merged["permission_profile"] = profile
+	}
+	return merged
+}
+
+func (c *codexClient) buildPermissionProfile(options codexThreadOptions) map[string]any {
+	if options.yolo {
+		return nil
+	}
+	var network map[string]any
+	switch strings.TrimSpace(strings.ToLower(c.cfg.codexNetworkEnabled)) {
+	case "true", "1", "yes":
+		network = map[string]any{"enabled": true}
+	case "false", "0", "no":
+		network = map[string]any{"enabled": false}
+	}
+	hasFS := len(c.cfg.codexFsReadPaths) > 0 || len(c.cfg.codexFsWritePaths) > 0
+	var fileSystem map[string]any
+	if hasFS {
+		fileSystem = make(map[string]any)
+		if len(c.cfg.codexFsReadPaths) > 0 {
+			fileSystem["read"] = c.cfg.codexFsReadPaths
+		}
+		if len(c.cfg.codexFsWritePaths) > 0 {
+			fileSystem["write"] = c.cfg.codexFsWritePaths
+		}
+	}
+	if network == nil && !hasFS {
+		return nil
+	}
+	profile := make(map[string]any)
+	if network != nil {
+		profile["network"] = network
+	}
+	if fileSystem != nil {
+		profile["file_system"] = fileSystem
+	}
+	return profile
 }
 
 func insertOptionalString(params map[string]any, key string, value string) {

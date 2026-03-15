@@ -34,3 +34,54 @@ func TestExtractTokenUsageComputesTotalWhenMissing(t *testing.T) {
 		t.Fatalf("unexpected usage: %#v", usage)
 	}
 }
+
+func TestBaseThreadParamsYoloOverridesSandboxAndApproval(t *testing.T) {
+	client := &codexClient{
+		cfg: config{
+			codexCWD:            "/tmp/project",
+			codexApprovalPolicy: "on-request",
+			codexSandbox:        "workspace-write",
+			codexPersonality:    "pragmatic",
+		},
+	}
+
+	params := client.baseThreadParams(codexThreadOptions{yolo: true})
+
+	if got := params["approvalPolicy"]; got != "never" {
+		t.Fatalf("unexpected approval policy: %#v", got)
+	}
+	if got := params["sandbox"]; got != "danger-full-access" {
+		t.Fatalf("unexpected sandbox: %#v", got)
+	}
+	if got := params["personality"]; got != "pragmatic" {
+		t.Fatalf("unexpected personality: %#v", got)
+	}
+}
+
+func TestMergedThreadConfigDropsPermissionProfileInYoloMode(t *testing.T) {
+	client := &codexClient{
+		cfg: config{
+			codexConfig: map[string]any{
+				"permission_profile": map[string]any{
+					"network": map[string]any{"enabled": false},
+				},
+				"custom": "value",
+			},
+			codexNetworkEnabled: "false",
+			codexFsReadPaths:    []string{"/tmp/read"},
+		},
+	}
+
+	normal := client.mergedThreadConfig(codexThreadOptions{})
+	if _, ok := normal["permission_profile"]; !ok {
+		t.Fatalf("expected permission profile in normal config: %#v", normal)
+	}
+
+	yolo := client.mergedThreadConfig(codexThreadOptions{yolo: true})
+	if _, ok := yolo["permission_profile"]; ok {
+		t.Fatalf("did not expect permission profile in yolo config: %#v", yolo)
+	}
+	if got := yolo["custom"]; got != "value" {
+		t.Fatalf("expected custom config to be preserved, got %#v", got)
+	}
+}

@@ -26,6 +26,7 @@ type relayApp struct {
 	stateMu         sync.RWMutex
 	threadIDsByChat map[string]string
 	verboseByChat   map[int64]bool
+	yoloByChat      map[int64]bool
 	lastUsageByChat map[int64]tokenUsage
 
 	workersMu sync.Mutex
@@ -53,6 +54,11 @@ type activeChatTurn struct {
 	stopTyping     func()
 }
 
+type relayState struct {
+	Threads    map[string]string `json:"threads,omitempty"`
+	YoloByChat map[string]bool   `json:"yolo_by_chat,omitempty"`
+}
+
 func newRelayApp(cfg config) (*relayApp, error) {
 	telegram := newTelegramClient(cfg.telegramBotToken)
 	codex, err := newCodexClient(cfg)
@@ -69,6 +75,7 @@ func newRelayAppWithServices(cfg config, telegram telegramService, codex codexSe
 		codex:           codex,
 		threadIDsByChat: map[string]string{},
 		verboseByChat:   map[int64]bool{},
+		yoloByChat:      map[int64]bool{},
 		lastUsageByChat: map[int64]tokenUsage{},
 		workers:         map[int64]*chatWorker{},
 	}
@@ -224,7 +231,8 @@ func (w *chatWorker) handleEvent(ctx context.Context, event chatEvent, active *a
 }
 
 func (w *chatWorker) startTurn(ctx context.Context, messageID int64, text string) (*activeChatTurn, error) {
-	threadID, err := w.app.codex.ensureThread(ctx, w.app.threadIDForChat(w.chatID))
+	options := w.app.threadOptionsForChat(w.chatID)
+	threadID, err := w.app.codex.ensureThread(ctx, w.app.threadIDForChat(w.chatID), options)
 	if err != nil {
 		return nil, err
 	}
@@ -335,14 +343,15 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 
 	switch command {
 	case "/new", "/reset":
-		threadID, err := w.app.codex.newThread(ctx)
+		options := w.app.threadOptionsForChat(w.chatID)
+		threadID, err := w.app.codex.newThread(ctx, options)
 		if err != nil {
 			return err
 		}
 		if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {
 			return err
 		}
-		return w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("Started a new Codex thread.\nthread_id=%s", threadID))
+		return w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("Started a new Codex thread in %s mode.\nthread_id=%s", w.app.executionModeName(w.chatID), threadID))
 	case "/status":
 		threadID := w.app.threadIDForChat(w.chatID)
 		if threadID == "" {
@@ -352,9 +361,9 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 		if !w.app.cfg.codexStartAppServer {
 			mode = "websocket"
 		}
-		return w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("Transport: %s\nThread: %s\nCWD: %s\nTokens: %s", mode, threadID, w.app.cfg.codexCWD, formatTokenUsage(w.app.lastUsageForChat(w.chatID))))
+		return w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("Transport: %s\nExecution: %s\nThread: %s\nCWD: %s\nTokens: %s", mode, w.app.executionProfileSummary(w.chatID), threadID, w.app.cfg.codexCWD, formatTokenUsage(w.app.lastUsageForChat(w.chatID))))
 	case "/help":
-		return w.app.telegram.sendMessage(ctx, w.chatID, "Send any text message to relay it to Codex.\n/new or /reset starts a fresh Codex thread.\n/status shows the current thread mapping and last token usage.\n/verbose toggles intermediate visible output for this chat.")
+		return w.app.telegram.sendMessage(ctx, w.chatID, "Send any text message to relay it to Codex.\n/new or /reset starts a fresh Codex thread.\n/status shows the current thread mapping, execution mode, and last token usage.\n/verbose toggles intermediate visible output for this chat.\n/yolo toggles YOLO execution mode for this chat and starts a fresh thread.")
 	case "/verbose":
 		enabled, message := w.app.toggleVerboseForChat(w.chatID, text)
 		if message == "" {
@@ -365,6 +374,22 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 			}
 		}
 		return w.app.telegram.sendMessage(ctx, w.chatID, message)
+	case "/yolo":
+		enabled, changed, message := w.app.toggleYoloForChat(w.chatID, text)
+		if message != "" {
+			return w.app.telegram.sendMessage(ctx, w.chatID, message)
+		}
+		if !changed {
+			return w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("YOLO mode is already %s for this chat.", enabledDisabled(enabled)))
+		}
+		threadID, err := w.app.codex.newThread(ctx, codexThreadOptions{yolo: enabled})
+		if err != nil {
+			return err
+		}
+		if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {
+			return err
+		}
+		return w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("YOLO mode %s for this chat. Started a fresh Codex thread.\nthread_id=%s", enabledDisabled(enabled), threadID))
 	default:
 		return w.app.telegram.sendMessage(ctx, w.chatID, "Unknown command. Use /help for the supported commands.")
 	}
@@ -395,6 +420,12 @@ func (a *relayApp) verboseForChat(chatID int64) bool {
 	return a.verboseByChat[chatID]
 }
 
+func (a *relayApp) yoloForChat(chatID int64) bool {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.yoloByChat[chatID]
+}
+
 func (a *relayApp) lastUsageForChat(chatID int64) *tokenUsage {
 	a.stateMu.RLock()
 	defer a.stateMu.RUnlock()
@@ -404,6 +435,24 @@ func (a *relayApp) lastUsageForChat(chatID int64) *tokenUsage {
 	}
 	copy := usage
 	return &copy
+}
+
+func (a *relayApp) threadOptionsForChat(chatID int64) codexThreadOptions {
+	return codexThreadOptions{yolo: a.yoloForChat(chatID)}
+}
+
+func (a *relayApp) executionModeName(chatID int64) string {
+	if a.yoloForChat(chatID) {
+		return "YOLO"
+	}
+	return "default"
+}
+
+func (a *relayApp) executionProfileSummary(chatID int64) string {
+	if a.yoloForChat(chatID) {
+		return "YOLO (approval=never, sandbox=danger-full-access)"
+	}
+	return fmt.Sprintf("default (approval=%s, sandbox=%s)", defaultString(a.cfg.codexApprovalPolicy, "(unset)"), defaultString(a.cfg.codexSandbox, "(unset)"))
 }
 
 func (a *relayApp) toggleVerboseForChat(chatID int64, text string) (bool, string) {
@@ -439,6 +488,52 @@ func (a *relayApp) toggleVerboseForChat(chatID int64, text string) (bool, string
 	return false, ""
 }
 
+func (a *relayApp) toggleYoloForChat(chatID int64, text string) (bool, bool, string) {
+	command := stringsTrimSpace(text)
+	arg := ""
+	if index := stringsIndexAny(command, " \t\r\n"); index >= 0 {
+		arg = stringsTrimSpace(command[index+1:])
+	}
+
+	a.stateMu.Lock()
+	current := a.yoloByChat[chatID]
+	next := current
+	switch arg {
+	case "", "toggle":
+		next = !current
+	case "on":
+		next = true
+	case "off":
+		next = false
+	case "status":
+		a.stateMu.Unlock()
+		return current, false, fmt.Sprintf("YOLO mode is %s for this chat.", enabledDisabled(current))
+	default:
+		a.stateMu.Unlock()
+		return current, false, "Usage: /yolo, /yolo on, /yolo off, or /yolo status"
+	}
+
+	if next == current {
+		a.stateMu.Unlock()
+		return current, false, ""
+	}
+	a.yoloByChat[chatID] = next
+	a.stateMu.Unlock()
+
+	verbosef("chat yolo mode changed %s", kvSummary("chat_id", chatID, "enabled", next))
+	if err := a.saveState(); err != nil {
+		a.stateMu.Lock()
+		if current {
+			a.yoloByChat[chatID] = true
+		} else {
+			delete(a.yoloByChat, chatID)
+		}
+		a.stateMu.Unlock()
+		return current, false, fmt.Sprintf("Failed to update YOLO mode: %v", err)
+	}
+	return next, true, ""
+}
+
 func (a *relayApp) setThreadIDForChat(chatID int64, threadID string) error {
 	chatKey := fmt.Sprintf("%d", chatID)
 	a.stateMu.Lock()
@@ -470,20 +565,45 @@ func (a *relayApp) loadState() error {
 		if errors.Is(err, os.ErrNotExist) {
 			a.stateMu.Lock()
 			a.threadIDsByChat = map[string]string{}
+			a.yoloByChat = map[int64]bool{}
 			a.stateMu.Unlock()
 			return nil
 		}
 		return fmt.Errorf("read relay state: %w", err)
 	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err == nil {
+		if _, hasThreads := raw["threads"]; hasThreads || raw["yolo_by_chat"] != nil {
+			var state relayState
+			if err := json.Unmarshal(data, &state); err != nil {
+				a.stateMu.Lock()
+				a.threadIDsByChat = map[string]string{}
+				a.yoloByChat = map[int64]bool{}
+				a.stateMu.Unlock()
+				return nil
+			}
+			a.stateMu.Lock()
+			a.threadIDsByChat = state.Threads
+			if a.threadIDsByChat == nil {
+				a.threadIDsByChat = map[string]string{}
+			}
+			a.yoloByChat = decodeBoolMap(state.YoloByChat)
+			a.stateMu.Unlock()
+			return nil
+		}
+	}
+
 	var mapping map[string]string
 	if err := json.Unmarshal(data, &mapping); err != nil {
 		a.stateMu.Lock()
 		a.threadIDsByChat = map[string]string{}
+		a.yoloByChat = map[int64]bool{}
 		a.stateMu.Unlock()
 		return nil
 	}
 	a.stateMu.Lock()
 	a.threadIDsByChat = mapping
+	a.yoloByChat = map[int64]bool{}
 	a.stateMu.Unlock()
 	return nil
 }
@@ -494,7 +614,11 @@ func (a *relayApp) saveState() error {
 	}
 
 	a.stateMu.RLock()
-	data, err := json.MarshalIndent(a.threadIDsByChat, "", "  ")
+	state := relayState{
+		Threads:    a.threadIDsByChat,
+		YoloByChat: encodeBoolMap(a.yoloByChat),
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
 	a.stateMu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("marshal relay state: %w", err)
@@ -504,6 +628,55 @@ func (a *relayApp) saveState() error {
 		return fmt.Errorf("write relay state: %w", err)
 	}
 	return nil
+}
+
+func encodeBoolMap(values map[int64]bool) map[string]bool {
+	if len(values) == 0 {
+		return nil
+	}
+	encoded := make(map[string]bool, len(values))
+	for chatID, enabled := range values {
+		if !enabled {
+			continue
+		}
+		encoded[fmt.Sprintf("%d", chatID)] = true
+	}
+	if len(encoded) == 0 {
+		return nil
+	}
+	return encoded
+}
+
+func decodeBoolMap(values map[string]bool) map[int64]bool {
+	if len(values) == 0 {
+		return map[int64]bool{}
+	}
+	decoded := make(map[int64]bool, len(values))
+	for rawChatID, enabled := range values {
+		if !enabled {
+			continue
+		}
+		var chatID int64
+		if _, err := fmt.Sscanf(rawChatID, "%d", &chatID); err != nil {
+			continue
+		}
+		decoded[chatID] = true
+	}
+	return decoded
+}
+
+func enabledDisabled(enabled bool) string {
+	if enabled {
+		return "enabled"
+	}
+	return "disabled"
+}
+
+func defaultString(value string, fallback string) string {
+	if stringsTrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func firstCommandToken(text string) string {

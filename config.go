@@ -31,6 +31,10 @@ type config struct {
 	codexDeveloperInstructions string
 	codexConfig                map[string]any
 	codexEphemeralThreads      bool
+	// Codex permission profile (optional)
+	codexNetworkEnabled string   // "true"/"false"/""; when set, sends permission_profile.network.enabled
+	codexFsReadPaths    []string // absolute paths the agent may read
+	codexFsWritePaths   []string // absolute paths the agent may write
 }
 
 func parseConfig() (config, error) {
@@ -41,6 +45,7 @@ func parseConfig() (config, error) {
 	var allowedChatIDs string
 	var codexConfigJSON string
 	var codexAppServerCommand string
+	var codexFsRead, codexFsWrite string
 	var noStartAppServer bool
 	var noCodexEphemeralThreads bool
 
@@ -66,7 +71,14 @@ func parseConfig() (config, error) {
 	flag.StringVar(&codexConfigJSON, "codex-config-json", envString("CODEX_CONFIG_JSON", ""), "Optional JSON object passed as Codex thread config")
 	flag.BoolVar(&cfg.codexEphemeralThreads, "codex-ephemeral-threads", ephemeralDefault, "Create ephemeral Codex threads")
 	flag.BoolVar(&noCodexEphemeralThreads, "no-codex-ephemeral-threads", false, "Persist Codex threads")
+	// Codex permission profile
+	flag.StringVar(&cfg.codexNetworkEnabled, "codex-network-enabled", envString("CODEX_NETWORK_ENABLED", ""), "Set to true/false to allow or deny network access (Codex permission profile)")
+	flag.StringVar(&codexFsRead, "codex-fs-read", envString("CODEX_FS_READ", ""), "Comma-separated paths the agent may read (Codex permission profile)")
+	flag.StringVar(&codexFsWrite, "codex-fs-write", envString("CODEX_FS_WRITE", ""), "Comma-separated paths the agent may write (Codex permission profile)")
 	flag.Parse()
+
+	cfg.codexFsReadPaths = parsePathList(codexFsRead)
+	cfg.codexFsWritePaths = parsePathList(codexFsWrite)
 
 	if noStartAppServer {
 		cfg.codexStartAppServer = false
@@ -143,6 +155,25 @@ func envBool(name string, fallback bool) bool {
 	default:
 		return fallback
 	}
+}
+
+func parsePathList(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if abs, err := filepath.Abs(part); err == nil {
+			part = abs
+		}
+		out = append(out, part)
+	}
+	return out
 }
 
 func parseAllowedChatIDs(raw string) (map[int64]struct{}, error) {
