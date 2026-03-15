@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -80,7 +81,8 @@ func (c *telegramClient) sendMessage(ctx context.Context, chatID int64, text str
 	))
 	payload := map[string]any{
 		"chat_id":                  chatID,
-		"text":                     text,
+		"text":                     telegramMarkdownV2(text),
+		"parse_mode":               "MarkdownV2",
 		"disable_web_page_preview": true,
 	}
 	var result any
@@ -223,4 +225,128 @@ func previousCharBoundary(text string, maxBytes int) int {
 		return maxBytes
 	}
 	return index
+}
+
+var telegramHeadingPattern = regexp.MustCompile(`^\s{0,3}#{1,6}\s+(.+?)\s*$`)
+
+func telegramMarkdownV2(text string) string {
+	var out strings.Builder
+	for len(text) > 0 {
+		if strings.HasPrefix(text, "```") {
+			block, rest, ok := consumeFencedCodeBlock(text)
+			if ok {
+				out.WriteString(block)
+				text = rest
+				continue
+			}
+		}
+		if strings.HasPrefix(text, "`") {
+			inline, rest, ok := consumeInlineCode(text)
+			if ok {
+				out.WriteString(inline)
+				text = rest
+				continue
+			}
+		}
+
+		next := len(text)
+		if index := strings.Index(text, "```"); index >= 0 && index < next {
+			next = index
+		}
+		if index := strings.Index(text, "`"); index >= 0 && index < next {
+			next = index
+		}
+		out.WriteString(formatTelegramMarkdownPlain(text[:next]))
+		text = text[next:]
+	}
+	return out.String()
+}
+
+func consumeFencedCodeBlock(text string) (string, string, bool) {
+	if !strings.HasPrefix(text, "```") {
+		return "", text, false
+	}
+	rest := text[3:]
+	lineEnd := strings.Index(rest, "\n")
+	if lineEnd < 0 {
+		return escapeTelegramMarkdownV2(text), "", true
+	}
+	language := strings.TrimSpace(rest[:lineEnd])
+	contentStart := 3 + lineEnd + 1
+	closing := strings.Index(text[contentStart:], "```")
+	if closing < 0 {
+		return escapeTelegramMarkdownV2(text), "", true
+	}
+	contentEnd := contentStart + closing
+	content := text[contentStart:contentEnd]
+	var out strings.Builder
+	out.WriteString("```")
+	if language != "" {
+		out.WriteString(language)
+	}
+	out.WriteByte('\n')
+	out.WriteString(escapeTelegramCode(content))
+	out.WriteString("```")
+	return out.String(), text[contentEnd+3:], true
+}
+
+func consumeInlineCode(text string) (string, string, bool) {
+	if !strings.HasPrefix(text, "`") {
+		return "", text, false
+	}
+	end := strings.Index(text[1:], "`")
+	if end < 0 {
+		return escapeTelegramMarkdownV2(text[:1]), text[1:], true
+	}
+	content := text[1 : 1+end]
+	if strings.Contains(content, "\n") {
+		return escapeTelegramMarkdownV2(text[:1]), text[1:], true
+	}
+	return "`" + escapeTelegramCode(content) + "`", text[1+end+1:], true
+}
+
+func formatTelegramMarkdownPlain(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		matches := telegramHeadingPattern.FindStringSubmatch(line)
+		if len(matches) == 2 {
+			lines[i] = "*" + escapeTelegramMarkdownV2(matches[1]) + "*"
+			continue
+		}
+		lines[i] = escapeTelegramMarkdownV2(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func escapeTelegramMarkdownV2(text string) string {
+	replacer := strings.NewReplacer(
+		"\\", "\\\\",
+		"_", "\\_",
+		"*", "\\*",
+		"[", "\\[",
+		"]", "\\]",
+		"(", "\\(",
+		")", "\\)",
+		"~", "\\~",
+		"`", "\\`",
+		">", "\\>",
+		"#", "\\#",
+		"+", "\\+",
+		"-", "\\-",
+		"=", "\\=",
+		"|", "\\|",
+		"{", "\\{",
+		"}", "\\}",
+		".", "\\.",
+		"!", "\\!",
+	)
+	return replacer.Replace(text)
+}
+
+func escapeTelegramCode(text string) string {
+	replacer := strings.NewReplacer(
+		"\\", "\\\\",
+		"`", "\\`",
+	)
+	return replacer.Replace(text)
 }
