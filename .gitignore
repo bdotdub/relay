@@ -1,10 +1,12 @@
 .relay-state.json
+.gomodcache/
 target/
 .gocache/
 .gotmp/
 
 *.so
 *.dylib
+relay
 
 # Test binary, built with `go test -c`
 *.test
