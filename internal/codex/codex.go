@@ -1,109 +1,114 @@
-package main
+package codex
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
+
+	"github.com/bdotdub/relay/internal/config"
+	"github.com/bdotdub/relay/internal/jsonrpc"
+	"github.com/bdotdub/relay/internal/logx"
 )
 
-type codexService interface {
-	close() error
-	newThread(ctx context.Context, options codexThreadOptions) (string, error)
-	ensureThread(ctx context.Context, threadID string, options codexThreadOptions) (string, error)
-	startTurn(ctx context.Context, threadID string, userText string) (*codexTurnHandle, error)
-	steerTurn(ctx context.Context, threadID string, turnID string, userText string) error
+type Service interface {
+	Close() error
+	NewThread(ctx context.Context, options ThreadOptions) (string, error)
+	EnsureThread(ctx context.Context, threadID string, options ThreadOptions) (string, error)
+	StartTurn(ctx context.Context, threadID string, userText string) (*TurnHandle, error)
+	SteerTurn(ctx context.Context, threadID string, turnID string, userText string) error
 }
 
-type codexThreadOptions struct {
-	yolo  bool
-	model string
+type ThreadOptions struct {
+	Yolo  bool
+	Model string
 }
 
-type codexClient struct {
-	rpc           *jsonRPCClient
-	cfg           config
+type Client struct {
+	rpc           *jsonrpc.Client
+	cfg           config.Config
 	loadedThreads map[string]struct{}
 	loadedMu      sync.Mutex
-	activeTurns   map[string]*codexTurnSubscription
+	activeTurns   map[string]*turnSubscription
 	activeTurnsMu sync.Mutex
 }
 
-type codexTurnHandle struct {
+type TurnHandle struct {
 	ThreadID string
 	TurnID   string
-	EventCh  <-chan turnStreamEvent
-	ResultCh <-chan turnResult
+	EventCh  <-chan TurnStreamEvent
+	ResultCh <-chan TurnResult
 }
 
-type codexTurnSubscription struct {
+type turnSubscription struct {
 	threadID      string
 	turnID        string
 	notifications chan map[string]any
-	eventCh       chan turnStreamEvent
-	resultCh      chan turnResult
+	eventCh       chan TurnStreamEvent
+	resultCh      chan TurnResult
 	stopCh        chan error
 }
 
-type turnStreamEvent struct {
-	text string
+type TurnStreamEvent struct {
+	Text string
 }
 
-type turnResult struct {
-	text             string
-	errorMessage     string
-	commentaryText   string
-	planText         string
-	reasoningSummary string
-	usage            *tokenUsage
-	err              error
+type TurnResult struct {
+	Text             string
+	ErrorMessage     string
+	CommentaryText   string
+	PlanText         string
+	ReasoningSummary string
+	Usage            *TokenUsage
+	Err              error
 }
 
-type tokenUsage struct {
-	input  int64
-	output int64
-	total  int64
+type TokenUsage struct {
+	Input  int64
+	Output int64
+	Total  int64
 }
 
 const relayDeveloperInstructions = "This Codex session is relayed through Telegram, and the user interacts with it there. Telegram messages are rendered with MarkdownV2. When you include a link, prefer the Markdown link form \"[label](url)\" so it renders correctly in Telegram. Do not include local filesystem paths unless they are truly necessary, because the user is interacting through Telegram rather than a shared local workspace."
 
-func newCodexClient(cfg config) (*codexClient, error) {
-	var rpc *jsonRPCClient
+func NewClient(cfg config.Config) (*Client, error) {
+	var rpc *jsonrpc.Client
 	var err error
-	if cfg.codexStartAppServer {
-		rpc, err = newJSONRPCStdioClient(cfg.codexAppServerCommand)
+	if cfg.CodexStartAppServer {
+		rpc, err = jsonrpc.NewStdioClient(cfg.CodexAppServerCommand)
 	} else {
-		rpc, err = newJSONRPCWebSocketClient(cfg.codexAppServerWSURL)
+		rpc, err = jsonrpc.NewWebSocketClient(cfg.CodexAppServerWSURL)
 	}
 	if err != nil {
 		return nil, err
 	}
 
-	client := &codexClient{
+	client := &Client{
 		rpc:           rpc,
 		cfg:           cfg,
 		loadedThreads: make(map[string]struct{}),
-		activeTurns:   make(map[string]*codexTurnSubscription),
+		activeTurns:   make(map[string]*turnSubscription),
 	}
 	if err := client.initialize(context.Background()); err != nil {
-		_ = rpc.close()
+		_ = rpc.Close()
 		return nil, err
 	}
-	debugf("codex client ready")
+	logx.Debugf("codex client ready")
 	go client.dispatchNotifications()
 	return client, nil
 }
 
-func (c *codexClient) close() error {
+func (c *Client) Close() error {
 	if c.rpc == nil {
 		return nil
 	}
-	return c.rpc.close()
+	return c.rpc.Close()
 }
 
-func (c *codexClient) initialize(ctx context.Context) error {
-	_, err := c.rpc.request(ctx, "initialize", map[string]any{
+func (c *Client) initialize(ctx context.Context) error {
+	_, err := c.rpc.Request(ctx, "initialize", map[string]any{
 		"clientInfo": map[string]any{
 			"name":    "telegram-codex-relay",
 			"version": "0.1.0",
@@ -112,11 +117,11 @@ func (c *codexClient) initialize(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return c.rpc.notify("initialized", nil)
+	return c.rpc.Notify("initialized", nil)
 }
 
-func (c *codexClient) newThread(ctx context.Context, options codexThreadOptions) (string, error) {
-	response, err := c.rpc.request(ctx, "thread/start", c.newThreadParams(options))
+func (c *Client) NewThread(ctx context.Context, options ThreadOptions) (string, error) {
+	response, err := c.rpc.Request(ctx, "thread/start", c.newThreadParams(options))
 	if err != nil {
 		return "", err
 	}
@@ -127,13 +132,13 @@ func (c *codexClient) newThread(ctx context.Context, options codexThreadOptions)
 	c.loadedMu.Lock()
 	c.loadedThreads[threadID] = struct{}{}
 	c.loadedMu.Unlock()
-	debugf("codex thread started %s", kvSummary("thread_id", threadID))
+	logx.Debugf("codex thread started %s", logx.KVSummary("thread_id", threadID))
 	return threadID, nil
 }
 
-func (c *codexClient) ensureThread(ctx context.Context, threadID string, options codexThreadOptions) (string, error) {
+func (c *Client) EnsureThread(ctx context.Context, threadID string, options ThreadOptions) (string, error) {
 	if threadID == "" {
-		return c.newThread(ctx, options)
+		return c.NewThread(ctx, options)
 	}
 	c.loadedMu.Lock()
 	_, ok := c.loadedThreads[threadID]
@@ -144,23 +149,23 @@ func (c *codexClient) ensureThread(ctx context.Context, threadID string, options
 
 	params := c.resumeThreadParams(options)
 	params["threadId"] = threadID
-	if _, err := c.rpc.request(ctx, "thread/resume", params); err == nil {
+	if _, err := c.rpc.Request(ctx, "thread/resume", params); err == nil {
 		c.loadedMu.Lock()
 		c.loadedThreads[threadID] = struct{}{}
 		c.loadedMu.Unlock()
-		debugf("codex thread resumed %s", kvSummary("thread_id", threadID))
+		logx.Debugf("codex thread resumed %s", logx.KVSummary("thread_id", threadID))
 		return threadID, nil
 	}
-	debugf("codex thread resume failed; starting new thread %s", kvSummary("thread_id", threadID))
-	return c.newThread(ctx, options)
+	logx.Debugf("codex thread resume failed; starting new thread %s", logx.KVSummary("thread_id", threadID))
+	return c.NewThread(ctx, options)
 }
 
-func (c *codexClient) startTurn(ctx context.Context, threadID string, userText string) (*codexTurnHandle, error) {
-	subscription := &codexTurnSubscription{
+func (c *Client) StartTurn(ctx context.Context, threadID string, userText string) (*TurnHandle, error) {
+	subscription := &turnSubscription{
 		threadID:      threadID,
 		notifications: make(chan map[string]any, 128),
-		eventCh:       make(chan turnStreamEvent, 32),
-		resultCh:      make(chan turnResult, 1),
+		eventCh:       make(chan TurnStreamEvent, 32),
+		resultCh:      make(chan TurnResult, 1),
 		stopCh:        make(chan error, 1),
 	}
 
@@ -172,7 +177,7 @@ func (c *codexClient) startTurn(ctx context.Context, threadID string, userText s
 	c.activeTurns[threadID] = subscription
 	c.activeTurnsMu.Unlock()
 
-	response, err := c.rpc.request(ctx, "turn/start", map[string]any{
+	response, err := c.rpc.Request(ctx, "turn/start", map[string]any{
 		"threadId": threadID,
 		"input": []map[string]any{
 			{
@@ -192,10 +197,10 @@ func (c *codexClient) startTurn(ctx context.Context, threadID string, userText s
 		return nil, err
 	}
 	subscription.turnID = turnID
-	debugf("codex turn started %s", kvSummary("thread_id", threadID, "turn_id", turnID, "text", summarizeText(userText)))
+	logx.Debugf("codex turn started %s", logx.KVSummary("thread_id", threadID, "turn_id", turnID, "text", logx.SummarizeText(userText)))
 	go c.collectTurnResult(subscription)
 
-	return &codexTurnHandle{
+	return &TurnHandle{
 		ThreadID: threadID,
 		TurnID:   turnID,
 		EventCh:  subscription.eventCh,
@@ -203,9 +208,9 @@ func (c *codexClient) startTurn(ctx context.Context, threadID string, userText s
 	}, nil
 }
 
-func (c *codexClient) steerTurn(ctx context.Context, threadID string, turnID string, userText string) error {
-	debugf("codex turn steer %s", kvSummary("thread_id", threadID, "turn_id", turnID, "text", summarizeText(userText)))
-	_, err := c.rpc.request(ctx, "turn/steer", map[string]any{
+func (c *Client) SteerTurn(ctx context.Context, threadID string, turnID string, userText string) error {
+	logx.Debugf("codex turn steer %s", logx.KVSummary("thread_id", threadID, "turn_id", turnID, "text", logx.SummarizeText(userText)))
+	_, err := c.rpc.Request(ctx, "turn/steer", map[string]any{
 		"threadId":       threadID,
 		"expectedTurnId": turnID,
 		"input": []map[string]any{
@@ -218,9 +223,9 @@ func (c *codexClient) steerTurn(ctx context.Context, threadID string, turnID str
 	return err
 }
 
-func (c *codexClient) dispatchNotifications() {
+func (c *Client) dispatchNotifications() {
 	for {
-		notification, err := c.rpc.nextNotification(context.Background())
+		notification, err := c.rpc.NextNotification(context.Background())
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
 				c.failActiveTurns(err)
@@ -245,7 +250,7 @@ func (c *codexClient) dispatchNotifications() {
 		}
 		turnID, _ := params["turnId"].(string)
 		method, _ := notification["method"].(string)
-		debugf("codex notification routed %s", kvSummary("method", method, "thread_id", threadID, "turn_id", turnID))
+		logx.Debugf("codex notification routed %s", logx.KVSummary("method", method, "thread_id", threadID, "turn_id", turnID))
 
 		select {
 		case subscription.notifications <- notification:
@@ -255,7 +260,7 @@ func (c *codexClient) dispatchNotifications() {
 	}
 }
 
-func (c *codexClient) collectTurnResult(subscription *codexTurnSubscription) {
+func (c *Client) collectTurnResult(subscription *turnSubscription) {
 	defer c.removeActiveTurn(subscription.threadID)
 	defer close(subscription.eventCh)
 
@@ -264,12 +269,12 @@ func (c *codexClient) collectTurnResult(subscription *codexTurnSubscription) {
 	var errorMessage string
 	var planDeltas []string
 	var reasoningSummaryDeltas []string
-	var usage *tokenUsage
+	var usage *TokenUsage
 
 	for {
 		select {
 		case err := <-subscription.stopCh:
-			subscription.resultCh <- turnResult{err: err}
+			subscription.resultCh <- TurnResult{Err: err}
 			close(subscription.resultCh)
 			return
 		case notification := <-subscription.notifications:
@@ -288,12 +293,12 @@ func (c *codexClient) collectTurnResult(subscription *codexTurnSubscription) {
 				deltas += delta
 			case "item/plan/delta":
 				delta, _ := params["delta"].(string)
-				if stringsTrimSpace(delta) != "" {
+				if strings.TrimSpace(delta) != "" {
 					planDeltas = append(planDeltas, delta)
 				}
 			case "item/reasoning/summaryTextDelta":
 				delta, _ := params["delta"].(string)
-				if stringsTrimSpace(delta) != "" {
+				if strings.TrimSpace(delta) != "" {
 					reasoningSummaryDeltas = append(reasoningSummaryDeltas, delta)
 				}
 			case "item/completed":
@@ -311,7 +316,7 @@ func (c *codexClient) collectTurnResult(subscription *codexTurnSubscription) {
 					text:  text,
 				})
 				if eventText := formatIntermediateTurnEvent(phase, text); eventText != "" {
-					subscription.eventCh <- turnStreamEvent{text: eventText}
+					subscription.eventCh <- TurnStreamEvent{Text: eventText}
 				}
 			case "error":
 				errorObject, _ := params["error"].(map[string]any)
@@ -327,22 +332,22 @@ func (c *codexClient) collectTurnResult(subscription *codexTurnSubscription) {
 					}
 				}
 				usage = extractTokenUsage(params)
-				result := turnResult{
-					text:             finalTurnText(completedMessages, deltas),
-					errorMessage:     errorMessage,
-					commentaryText:   commentaryText(completedMessages),
-					planText:         stringsTrimSpace(strings.Join(planDeltas, "")),
-					reasoningSummary: stringsTrimSpace(strings.Join(reasoningSummaryDeltas, "")),
-					usage:            usage,
+				result := TurnResult{
+					Text:             finalTurnText(completedMessages, deltas),
+					ErrorMessage:     errorMessage,
+					CommentaryText:   commentaryText(completedMessages),
+					PlanText:         strings.TrimSpace(strings.Join(planDeltas, "")),
+					ReasoningSummary: strings.TrimSpace(strings.Join(reasoningSummaryDeltas, "")),
+					Usage:            usage,
 				}
-				debugf("codex turn completed %s", kvSummary(
+				logx.Debugf("codex turn completed %s", logx.KVSummary(
 					"thread_id", subscription.threadID,
 					"turn_id", subscription.turnID,
-					"usage", summarizeTokenUsage(result.usage),
-					"final_text", summarizeText(result.text),
-					"commentary", summarizeText(result.commentaryText),
-					"plan", summarizeText(result.planText),
-					"reasoning_summary", summarizeText(result.reasoningSummary),
+					"usage", summarizeTokenUsage(result.Usage),
+					"final_text", logx.SummarizeText(result.Text),
+					"commentary", logx.SummarizeText(result.CommentaryText),
+					"plan", logx.SummarizeText(result.PlanText),
+					"reasoning_summary", logx.SummarizeText(result.ReasoningSummary),
 				))
 				subscription.resultCh <- result
 				close(subscription.resultCh)
@@ -352,13 +357,13 @@ func (c *codexClient) collectTurnResult(subscription *codexTurnSubscription) {
 	}
 }
 
-func (c *codexClient) removeActiveTurn(threadID string) {
+func (c *Client) removeActiveTurn(threadID string) {
 	c.activeTurnsMu.Lock()
 	delete(c.activeTurns, threadID)
 	c.activeTurnsMu.Unlock()
 }
 
-func (c *codexClient) failActiveTurns(err error) {
+func (c *Client) failActiveTurns(err error) {
 	c.activeTurnsMu.Lock()
 	defer c.activeTurnsMu.Unlock()
 	for threadID, subscription := range c.activeTurns {
@@ -379,7 +384,7 @@ func finalTurnText(messages []agentMessage, deltas string) string {
 	var finals []string
 	var all []string
 	for _, message := range messages {
-		text := stringsTrimSpace(message.text)
+		text := strings.TrimSpace(message.text)
 		if text == "" {
 			continue
 		}
@@ -389,12 +394,12 @@ func finalTurnText(messages []agentMessage, deltas string) string {
 		}
 	}
 	if len(finals) > 0 {
-		return joinParagraphs(finals)
+		return strings.Join(finals, "\n\n")
 	}
 	if len(all) > 0 {
-		return joinParagraphs(all)
+		return strings.Join(all, "\n\n")
 	}
-	return stringsTrimSpace(deltas)
+	return strings.TrimSpace(deltas)
 }
 
 func commentaryText(messages []agentMessage) string {
@@ -403,7 +408,7 @@ func commentaryText(messages []agentMessage) string {
 		if message.phase != "commentary" {
 			continue
 		}
-		text := stringsTrimSpace(message.text)
+		text := strings.TrimSpace(message.text)
 		if text == "" {
 			continue
 		}
@@ -412,33 +417,33 @@ func commentaryText(messages []agentMessage) string {
 	if len(commentary) == 0 {
 		return ""
 	}
-	return joinParagraphs(commentary)
+	return strings.Join(commentary, "\n\n")
 }
 
 func formatIntermediateTurnEvent(phase string, text string) string {
-	text = stringsTrimSpace(text)
+	text = strings.TrimSpace(text)
 	if text == "" || phase == "final_answer" {
 		return ""
 	}
 	return text
 }
 
-func summarizeTokenUsage(usage *tokenUsage) string {
+func summarizeTokenUsage(usage *TokenUsage) string {
 	if usage == nil {
 		return "n/a"
 	}
 	parts := []string{}
-	if usage.input > 0 || usage.output > 0 {
-		parts = append(parts, fmt.Sprintf("input=%d", usage.input))
-		parts = append(parts, fmt.Sprintf("output=%d", usage.output))
+	if usage.Input > 0 || usage.Output > 0 {
+		parts = append(parts, fmt.Sprintf("input=%d", usage.Input))
+		parts = append(parts, fmt.Sprintf("output=%d", usage.Output))
 	}
-	if usage.total > 0 || len(parts) == 0 {
-		parts = append(parts, fmt.Sprintf("total=%d", usage.total))
+	if usage.Total > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("total=%d", usage.Total))
 	}
-	return stringsJoin(parts, " ")
+	return strings.Join(parts, " ")
 }
 
-func extractTokenUsage(params map[string]any) *tokenUsage {
+func extractTokenUsage(params map[string]any) *TokenUsage {
 	candidates := []map[string]any{params}
 	if usage, ok := params["usage"].(map[string]any); ok {
 		candidates = append(candidates, usage)
@@ -450,7 +455,7 @@ func extractTokenUsage(params map[string]any) *tokenUsage {
 		}
 	}
 
-	var usage tokenUsage
+	var usage TokenUsage
 	var foundInput bool
 	var foundOutput bool
 	var foundTotal bool
@@ -458,26 +463,26 @@ func extractTokenUsage(params map[string]any) *tokenUsage {
 	for _, candidate := range candidates {
 		if !foundInput {
 			if value, ok := extractUsageCount(candidate, "inputTokens", "input_tokens", "promptTokens", "prompt_tokens"); ok {
-				usage.input = value
+				usage.Input = value
 				foundInput = true
 			}
 		}
 		if !foundOutput {
 			if value, ok := extractUsageCount(candidate, "outputTokens", "output_tokens", "completionTokens", "completion_tokens"); ok {
-				usage.output = value
+				usage.Output = value
 				foundOutput = true
 			}
 		}
 		if !foundTotal {
 			if value, ok := extractUsageCount(candidate, "totalTokens", "total_tokens"); ok {
-				usage.total = value
+				usage.Total = value
 				foundTotal = true
 			}
 		}
 	}
 
 	if !foundTotal && foundInput && foundOutput {
-		usage.total = usage.input + usage.output
+		usage.Total = usage.Input + usage.Output
 		foundTotal = true
 	}
 	if !foundInput && !foundOutput && !foundTotal {
@@ -499,21 +504,21 @@ func extractUsageCount(values map[string]any, keys ...string) (int64, bool) {
 	return 0, false
 }
 
-func (c *codexClient) baseThreadParams(options codexThreadOptions) map[string]any {
+func (c *Client) baseThreadParams(options ThreadOptions) map[string]any {
 	params := map[string]any{
-		"cwd": c.cfg.codexCWD,
+		"cwd": c.cfg.CodexCWD,
 	}
-	if options.yolo {
+	if options.Yolo {
 		params["approvalPolicy"] = "never"
 		params["sandbox"] = "danger-full-access"
 	} else {
-		insertOptionalString(params, "approvalPolicy", c.cfg.codexApprovalPolicy)
-		insertOptionalString(params, "sandbox", c.cfg.codexSandbox)
+		insertOptionalString(params, "approvalPolicy", c.cfg.CodexApprovalPolicy)
+		insertOptionalString(params, "sandbox", c.cfg.CodexSandbox)
 	}
 	insertOptionalString(params, "model", c.modelForOptions(options))
-	insertOptionalString(params, "personality", c.cfg.codexPersonality)
-	insertOptionalString(params, "serviceTier", c.cfg.codexServiceTier)
-	insertOptionalString(params, "baseInstructions", c.cfg.codexBaseInstructions)
+	insertOptionalString(params, "personality", c.cfg.CodexPersonality)
+	insertOptionalString(params, "serviceTier", c.cfg.CodexServiceTier)
+	insertOptionalString(params, "baseInstructions", c.cfg.CodexBaseInstructions)
 	insertOptionalString(params, "developerInstructions", c.developerInstructions())
 	if merged := c.mergedThreadConfig(options); len(merged) > 0 {
 		params["config"] = merged
@@ -521,40 +526,40 @@ func (c *codexClient) baseThreadParams(options codexThreadOptions) map[string]an
 	return params
 }
 
-func (c *codexClient) developerInstructions() string {
+func (c *Client) developerInstructions() string {
 	parts := make([]string, 0, 2)
-	if value := strings.TrimSpace(c.cfg.codexDeveloperInstructions); value != "" {
+	if value := strings.TrimSpace(c.cfg.CodexDeveloperInstructions); value != "" {
 		parts = append(parts, value)
 	}
 	parts = append(parts, relayDeveloperInstructions)
 	return strings.Join(parts, "\n\n")
 }
 
-func (c *codexClient) modelForOptions(options codexThreadOptions) string {
-	if stringsTrimSpace(options.model) != "" {
-		return options.model
+func (c *Client) modelForOptions(options ThreadOptions) string {
+	if strings.TrimSpace(options.Model) != "" {
+		return options.Model
 	}
-	return c.cfg.codexModel
+	return c.cfg.CodexModel
 }
 
-func (c *codexClient) newThreadParams(options codexThreadOptions) map[string]any {
+func (c *Client) newThreadParams(options ThreadOptions) map[string]any {
 	params := c.baseThreadParams(options)
-	params["ephemeral"] = c.cfg.codexEphemeralThreads
+	params["ephemeral"] = c.cfg.CodexEphemeralThreads
 	return params
 }
 
-func (c *codexClient) resumeThreadParams(options codexThreadOptions) map[string]any {
+func (c *Client) resumeThreadParams(options ThreadOptions) map[string]any {
 	return c.baseThreadParams(options)
 }
 
 // mergedThreadConfig returns the thread config map, merging in a permission profile when
 // codexNetworkEnabled, codexFsReadPaths, or codexFsWritePaths are set. Uses snake_case keys
 // to match the Codex protocol (file_system, network, permission_profile).
-func (c *codexClient) mergedThreadConfig(options codexThreadOptions) map[string]any {
+func (c *Client) mergedThreadConfig(options ThreadOptions) map[string]any {
 	merged := make(map[string]any)
-	if c.cfg.codexConfig != nil {
-		for k, v := range c.cfg.codexConfig {
-			if options.yolo && k == "permission_profile" {
+	if c.cfg.CodexConfig != nil {
+		for k, v := range c.cfg.CodexConfig {
+			if options.Yolo && k == "permission_profile" {
 				continue
 			}
 			merged[k] = v
@@ -567,26 +572,26 @@ func (c *codexClient) mergedThreadConfig(options codexThreadOptions) map[string]
 	return merged
 }
 
-func (c *codexClient) buildPermissionProfile(options codexThreadOptions) map[string]any {
-	if options.yolo {
+func (c *Client) buildPermissionProfile(options ThreadOptions) map[string]any {
+	if options.Yolo {
 		return nil
 	}
 	var network map[string]any
-	switch strings.TrimSpace(strings.ToLower(c.cfg.codexNetworkEnabled)) {
+	switch strings.TrimSpace(strings.ToLower(c.cfg.CodexNetworkEnabled)) {
 	case "true", "1", "yes":
 		network = map[string]any{"enabled": true}
 	case "false", "0", "no":
 		network = map[string]any{"enabled": false}
 	}
-	hasFS := len(c.cfg.codexFsReadPaths) > 0 || len(c.cfg.codexFsWritePaths) > 0
+	hasFS := len(c.cfg.CodexFsReadPaths) > 0 || len(c.cfg.CodexFsWritePaths) > 0
 	var fileSystem map[string]any
 	if hasFS {
 		fileSystem = make(map[string]any)
-		if len(c.cfg.codexFsReadPaths) > 0 {
-			fileSystem["read"] = c.cfg.codexFsReadPaths
+		if len(c.cfg.CodexFsReadPaths) > 0 {
+			fileSystem["read"] = c.cfg.CodexFsReadPaths
 		}
-		if len(c.cfg.codexFsWritePaths) > 0 {
-			fileSystem["write"] = c.cfg.codexFsWritePaths
+		if len(c.cfg.CodexFsWritePaths) > 0 {
+			fileSystem["write"] = c.cfg.CodexFsWritePaths
 		}
 	}
 	if network == nil && !hasFS {
@@ -603,7 +608,7 @@ func (c *codexClient) buildPermissionProfile(options codexThreadOptions) map[str
 }
 
 func insertOptionalString(params map[string]any, key string, value string) {
-	if stringsTrimSpace(value) != "" {
+	if strings.TrimSpace(value) != "" {
 		params[key] = value
 	}
 }
@@ -622,4 +627,25 @@ func extractNestedString(object map[string]any, keys ...string) (string, error) 
 		return "", fmt.Errorf("missing %s", strings.Join(keys, "."))
 	}
 	return value, nil
+}
+
+func numberToInt64(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		if typed < math.MinInt64 || typed > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(typed), true
+	case int:
+		return int64(typed), true
+	case int64:
+		return typed, true
+	case uint64:
+		if typed > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(typed), true
+	default:
+		return 0, false
+	}
 }

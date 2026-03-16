@@ -1,4 +1,4 @@
-package main
+package telegram
 
 import (
 	"context"
@@ -10,8 +10,8 @@ import (
 )
 
 func TestChunkMessageRespectsLimit(t *testing.T) {
-	text := "Paragraph one.\n\n" + stringsRepeat("x", 50) + "\n" + stringsRepeat("y", 50)
-	chunks := chunkMessage(text, 40)
+	text := "Paragraph one.\n\n" + strings.Repeat("x", 50) + "\n" + strings.Repeat("y", 50)
+	chunks := ChunkMessage(text, 40)
 	if len(chunks) < 2 {
 		t.Fatalf("expected multiple chunks, got %d", len(chunks))
 	}
@@ -23,7 +23,7 @@ func TestChunkMessageRespectsLimit(t *testing.T) {
 }
 
 func TestChunkMessageEmptyPlaceholder(t *testing.T) {
-	chunks := chunkMessage("   ", 20)
+	chunks := ChunkMessage("   ", 20)
 	if len(chunks) != 1 || chunks[0] != "(empty response)" {
 		t.Fatalf("unexpected chunks: %#v", chunks)
 	}
@@ -31,7 +31,7 @@ func TestChunkMessageEmptyPlaceholder(t *testing.T) {
 
 func TestTelegramMarkdownV2FormatsHeadingsAndCode(t *testing.T) {
 	text := "# Title\nUse `fmt.Println()` here.\n\n```go\nfmt.Println(\"hi\")\n```"
-	formatted := telegramMarkdownV2(text)
+	formatted := markdownV2(text)
 
 	expected := "*Title*\nUse `fmt.Println()` here\\.\n\n```go\nfmt.Println(\"hi\")\n```"
 	if formatted != expected {
@@ -41,7 +41,7 @@ func TestTelegramMarkdownV2FormatsHeadingsAndCode(t *testing.T) {
 
 func TestTelegramMarkdownV2PreservesMarkdownLinks(t *testing.T) {
 	text := "See [OpenAI](https://openai.com/docs) for details."
-	formatted := telegramMarkdownV2(text)
+	formatted := markdownV2(text)
 
 	expected := "See [OpenAI](https://openai.com/docs) for details\\."
 	if formatted != expected {
@@ -51,7 +51,7 @@ func TestTelegramMarkdownV2PreservesMarkdownLinks(t *testing.T) {
 
 func TestTelegramMarkdownV2FormatsLists(t *testing.T) {
 	text := "- first item\n* second item\n1. step one\n2) step two"
-	formatted := telegramMarkdownV2(text)
+	formatted := markdownV2(text)
 
 	expected := "• first item\n• second item\n1\\. step one\n2\\. step two"
 	if formatted != expected {
@@ -61,7 +61,7 @@ func TestTelegramMarkdownV2FormatsLists(t *testing.T) {
 
 func TestTelegramClientSendMessageUsesMarkdownV2(t *testing.T) {
 	var payload map[string]any
-	client := &telegramClient{
+	client := &Client{
 		baseURL: "https://example.invalid",
 		client: &http.Client{
 			Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -77,7 +77,7 @@ func TestTelegramClientSendMessageUsesMarkdownV2(t *testing.T) {
 			}),
 		},
 	}
-	if err := client.sendMessage(context.Background(), 7, "# Title"); err != nil {
+	if err := client.SendMessage(context.Background(), 7, "# Title"); err != nil {
 		t.Fatalf("sendMessage: %v", err)
 	}
 

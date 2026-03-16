@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"flag"
@@ -14,8 +14,8 @@ func TestParseConfigDefaultsLogLevelToInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse config: %v", err)
 	}
-	if cfg.logLevel != "info" {
-		t.Fatalf("expected info log level by default, got %q", cfg.logLevel)
+	if cfg.LogLevel != "info" {
+		t.Fatalf("expected info log level by default, got %q", cfg.LogLevel)
 	}
 }
 
@@ -26,8 +26,8 @@ func TestParseConfigVerboseFlagSetsDebugLogLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse config: %v", err)
 	}
-	if cfg.logLevel != "debug" {
-		t.Fatalf("expected debug log level from --verbose, got %q", cfg.logLevel)
+	if cfg.LogLevel != "debug" {
+		t.Fatalf("expected debug log level from --verbose, got %q", cfg.LogLevel)
 	}
 }
 
@@ -39,8 +39,8 @@ func TestParseConfigRelayVerboseEnvSetsDebugLogLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse config: %v", err)
 	}
-	if cfg.logLevel != "debug" {
-		t.Fatalf("expected debug log level from RELAY_VERBOSE, got %q", cfg.logLevel)
+	if cfg.LogLevel != "debug" {
+		t.Fatalf("expected debug log level from RELAY_VERBOSE, got %q", cfg.LogLevel)
 	}
 }
 
@@ -53,8 +53,8 @@ func TestParseConfigRelayLogLevelOverridesRelayVerboseEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse config: %v", err)
 	}
-	if cfg.logLevel != "error" {
-		t.Fatalf("expected error log level from RELAY_LOG_LEVEL, got %q", cfg.logLevel)
+	if cfg.LogLevel != "error" {
+		t.Fatalf("expected error log level from RELAY_LOG_LEVEL, got %q", cfg.LogLevel)
 	}
 }
 
@@ -65,8 +65,8 @@ func TestParseConfigVerboseFlagOverridesExplicitLogLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse config: %v", err)
 	}
-	if cfg.logLevel != "debug" {
-		t.Fatalf("expected debug log level when --verbose is set, got %q", cfg.logLevel)
+	if cfg.LogLevel != "debug" {
+		t.Fatalf("expected debug log level when --verbose is set, got %q", cfg.LogLevel)
 	}
 }
 
@@ -78,7 +78,7 @@ func TestParseConfigRejectsInvalidLogLevel(t *testing.T) {
 	}
 }
 
-func parseConfigForTest(t *testing.T, args ...string) (config, error) {
+func parseConfigForTest(t *testing.T, args ...string) (Config, error) {
 	t.Helper()
 
 	oldArgs := os.Args
@@ -94,5 +94,5 @@ func parseConfigForTest(t *testing.T, args ...string) (config, error) {
 		flag.CommandLine = oldCommandLine
 	})
 
-	return parseConfig()
+	return Parse()
 }

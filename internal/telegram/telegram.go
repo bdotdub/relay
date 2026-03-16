@@ -1,4 +1,4 @@
-package main
+package telegram
 
 import (
 	"bytes"
@@ -9,25 +9,34 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/bdotdub/relay/internal/logx"
 )
 
-type telegramClient struct {
+type Service interface {
+	DeleteWebhook(ctx context.Context, dropPending bool) error
+	GetUpdates(ctx context.Context, offset *int64, timeoutSeconds int) ([]Update, error)
+	SendMessage(ctx context.Context, chatID int64, text string) error
+	SendChatAction(ctx context.Context, chatID int64, action string) error
+}
+
+type Client struct {
 	baseURL string
 	client  *http.Client
 }
 
-type telegramUpdate struct {
-	UpdateID int64            `json:"update_id"`
-	Message  *telegramMessage `json:"message"`
+type Update struct {
+	UpdateID int64    `json:"update_id"`
+	Message  *Message `json:"message"`
 }
 
-type telegramMessage struct {
-	MessageID int64        `json:"message_id"`
-	Chat      telegramChat `json:"chat"`
-	Text      string       `json:"text"`
+type Message struct {
+	MessageID int64  `json:"message_id"`
+	Chat      Chat   `json:"chat"`
+	Text      string `json:"text"`
 }
 
-type telegramChat struct {
+type Chat struct {
 	ID int64 `json:"id"`
 }
 
@@ -37,8 +46,8 @@ type telegramResponse[T any] struct {
 	Description string `json:"description"`
 }
 
-func newTelegramClient(token string) *telegramClient {
-	return &telegramClient{
+func NewClient(token string) *Client {
+	return &Client{
 		baseURL: fmt.Sprintf("https://api.telegram.org/bot%s", token),
 		client: &http.Client{
 			Timeout: 60 * time.Second,
@@ -46,8 +55,8 @@ func newTelegramClient(token string) *telegramClient {
 	}
 }
 
-func (c *telegramClient) deleteWebhook(ctx context.Context, dropPending bool) error {
-	debugf("telegram deleteWebhook %s", kvSummary("drop_pending", dropPending))
+func (c *Client) DeleteWebhook(ctx context.Context, dropPending bool) error {
+	logx.Debugf("telegram deleteWebhook %s", logx.KVSummary("drop_pending", dropPending))
 	payload := map[string]any{
 		"drop_pending_updates": dropPending,
 	}
@@ -55,8 +64,8 @@ func (c *telegramClient) deleteWebhook(ctx context.Context, dropPending bool) er
 	return c.call(ctx, "deleteWebhook", payload, &result)
 }
 
-func (c *telegramClient) getUpdates(ctx context.Context, offset *int64, timeoutSeconds int) ([]telegramUpdate, error) {
-	debugf("telegram getUpdates %s", kvSummary("offset", offsetValue(offset), "timeout", timeoutSeconds))
+func (c *Client) GetUpdates(ctx context.Context, offset *int64, timeoutSeconds int) ([]Update, error) {
+	logx.Debugf("telegram getUpdates %s", logx.KVSummary("offset", offsetValue(offset), "timeout", timeoutSeconds))
 	payload := map[string]any{
 		"timeout":         timeoutSeconds,
 		"allowed_updates": []string{"message"},
@@ -64,24 +73,24 @@ func (c *telegramClient) getUpdates(ctx context.Context, offset *int64, timeoutS
 	if offset != nil {
 		payload["offset"] = *offset
 	}
-	var result []telegramUpdate
+	var result []Update
 	if err := c.call(ctx, "getUpdates", payload, &result); err != nil {
 		return nil, err
 	}
 	if len(result) > 0 {
-		debugf("telegram getUpdates result %s", kvSummary("updates", len(result)))
+		logx.Debugf("telegram getUpdates result %s", logx.KVSummary("updates", len(result)))
 	}
 	return result, nil
 }
 
-func (c *telegramClient) sendMessage(ctx context.Context, chatID int64, text string) error {
-	debugf("telegram sendMessage %s", kvSummary(
+func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) error {
+	logx.Debugf("telegram sendMessage %s", logx.KVSummary(
 		"chat_id", chatID,
-		"text", summarizeText(text),
+		"text", logx.SummarizeText(text),
 	))
 	payload := map[string]any{
 		"chat_id":                  chatID,
-		"text":                     telegramMarkdownV2(text),
+		"text":                     markdownV2(text),
 		"parse_mode":               "MarkdownV2",
 		"disable_web_page_preview": true,
 	}
@@ -89,8 +98,8 @@ func (c *telegramClient) sendMessage(ctx context.Context, chatID int64, text str
 	return c.call(ctx, "sendMessage", payload, &result)
 }
 
-func (c *telegramClient) sendChatAction(ctx context.Context, chatID int64, action string) error {
-	debugf("telegram sendChatAction %s", kvSummary("chat_id", chatID, "action", action))
+func (c *Client) SendChatAction(ctx context.Context, chatID int64, action string) error {
+	logx.Debugf("telegram sendChatAction %s", logx.KVSummary("chat_id", chatID, "action", action))
 	payload := map[string]any{
 		"chat_id": chatID,
 		"action":  action,
@@ -99,7 +108,7 @@ func (c *telegramClient) sendChatAction(ctx context.Context, chatID int64, actio
 	return c.call(ctx, "sendChatAction", payload, &result)
 }
 
-func (c *telegramClient) call(ctx context.Context, method string, payload any, out any) error {
+func (c *Client) call(ctx context.Context, method string, payload any, out any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal telegram request %s: %w", method, err)
@@ -130,7 +139,7 @@ func (c *telegramClient) call(ctx context.Context, method string, payload any, o
 		}
 		return fmt.Errorf("telegram request %s failed: %s", method, decoded.Description)
 	}
-	debugf("telegram %s ok", method)
+	logx.Debugf("telegram %s ok", method)
 	if out == nil {
 		return nil
 	}
@@ -150,7 +159,7 @@ func offsetValue(value *int64) any {
 	return *value
 }
 
-func chunkMessage(text string, limit int) []string {
+func ChunkMessage(text string, limit int) []string {
 	stripped := strings.TrimSpace(text)
 	if stripped == "" || limit <= 0 {
 		return []string{"(empty response)"}
@@ -227,11 +236,11 @@ func previousCharBoundary(text string, maxBytes int) int {
 	return index
 }
 
-var telegramHeadingPattern = regexp.MustCompile(`^\s{0,3}#{1,6}\s+(.+?)\s*$`)
-var telegramUnorderedListPattern = regexp.MustCompile(`^\s{0,3}[-*+]\s+(.+?)\s*$`)
-var telegramOrderedListPattern = regexp.MustCompile(`^\s{0,3}(\d+)[.)]\s+(.+?)\s*$`)
+var headingPattern = regexp.MustCompile(`^\s{0,3}#{1,6}\s+(.+?)\s*$`)
+var unorderedListPattern = regexp.MustCompile(`^\s{0,3}[-*+]\s+(.+?)\s*$`)
+var orderedListPattern = regexp.MustCompile(`^\s{0,3}(\d+)[.)]\s+(.+?)\s*$`)
 
-func telegramMarkdownV2(text string) string {
+func markdownV2(text string) string {
 	var out strings.Builder
 	for len(text) > 0 {
 		if strings.HasPrefix(text, "```") {
@@ -251,13 +260,13 @@ func telegramMarkdownV2(text string) string {
 			}
 		}
 		if strings.HasPrefix(text, "[") {
-			link, rest, ok := consumeTelegramLink(text)
+			link, rest, ok := consumeLink(text)
 			if ok {
 				out.WriteString(link)
 				text = rest
 				continue
 			}
-			out.WriteString(escapeTelegramMarkdownV2(text[:1]))
+			out.WriteString(escapeMarkdownV2(text[:1]))
 			text = text[1:]
 			continue
 		}
@@ -272,7 +281,7 @@ func telegramMarkdownV2(text string) string {
 		if index := strings.Index(text, "["); index >= 0 && index < next {
 			next = index
 		}
-		out.WriteString(formatTelegramMarkdownPlain(text[:next]))
+		out.WriteString(formatMarkdownPlain(text[:next]))
 		text = text[next:]
 	}
 	return out.String()
@@ -285,13 +294,13 @@ func consumeFencedCodeBlock(text string) (string, string, bool) {
 	rest := text[3:]
 	lineEnd := strings.Index(rest, "\n")
 	if lineEnd < 0 {
-		return escapeTelegramMarkdownV2(text), "", true
+		return escapeMarkdownV2(text), "", true
 	}
 	language := strings.TrimSpace(rest[:lineEnd])
 	contentStart := 3 + lineEnd + 1
 	closing := strings.Index(text[contentStart:], "```")
 	if closing < 0 {
-		return escapeTelegramMarkdownV2(text), "", true
+		return escapeMarkdownV2(text), "", true
 	}
 	contentEnd := contentStart + closing
 	content := text[contentStart:contentEnd]
@@ -301,7 +310,7 @@ func consumeFencedCodeBlock(text string) (string, string, bool) {
 		out.WriteString(language)
 	}
 	out.WriteByte('\n')
-	out.WriteString(escapeTelegramCode(content))
+	out.WriteString(escapeCode(content))
 	out.WriteString("```")
 	return out.String(), text[contentEnd+3:], true
 }
@@ -312,16 +321,16 @@ func consumeInlineCode(text string) (string, string, bool) {
 	}
 	end := strings.Index(text[1:], "`")
 	if end < 0 {
-		return escapeTelegramMarkdownV2(text[:1]), text[1:], true
+		return escapeMarkdownV2(text[:1]), text[1:], true
 	}
 	content := text[1 : 1+end]
 	if strings.Contains(content, "\n") {
-		return escapeTelegramMarkdownV2(text[:1]), text[1:], true
+		return escapeMarkdownV2(text[:1]), text[1:], true
 	}
-	return "`" + escapeTelegramCode(content) + "`", text[1+end+1:], true
+	return "`" + escapeCode(content) + "`", text[1+end+1:], true
 }
 
-func consumeTelegramLink(text string) (string, string, bool) {
+func consumeLink(text string) (string, string, bool) {
 	if !strings.HasPrefix(text, "[") {
 		return "", text, false
 	}
@@ -343,33 +352,33 @@ func consumeTelegramLink(text string) (string, string, bool) {
 	if strings.Contains(url, "\n") || strings.TrimSpace(url) == "" {
 		return "", text, false
 	}
-	return "[" + escapeTelegramMarkdownV2(label) + "](" + escapeTelegramLinkURL(url) + ")", text[urlEnd+1:], true
+	return "[" + escapeMarkdownV2(label) + "](" + escapeLinkURL(url) + ")", text[urlEnd+1:], true
 }
 
-func formatTelegramMarkdownPlain(text string) string {
+func formatMarkdownPlain(text string) string {
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
-		matches := telegramHeadingPattern.FindStringSubmatch(line)
+		matches := headingPattern.FindStringSubmatch(line)
 		if len(matches) == 2 {
-			lines[i] = "*" + escapeTelegramMarkdownV2(matches[1]) + "*"
+			lines[i] = "*" + escapeMarkdownV2(matches[1]) + "*"
 			continue
 		}
-		matches = telegramUnorderedListPattern.FindStringSubmatch(line)
+		matches = unorderedListPattern.FindStringSubmatch(line)
 		if len(matches) == 2 {
-			lines[i] = "• " + escapeTelegramMarkdownV2(matches[1])
+			lines[i] = "• " + escapeMarkdownV2(matches[1])
 			continue
 		}
-		matches = telegramOrderedListPattern.FindStringSubmatch(line)
+		matches = orderedListPattern.FindStringSubmatch(line)
 		if len(matches) == 3 {
-			lines[i] = matches[1] + "\\. " + escapeTelegramMarkdownV2(matches[2])
+			lines[i] = matches[1] + "\\. " + escapeMarkdownV2(matches[2])
 			continue
 		}
-		lines[i] = escapeTelegramMarkdownV2(line)
+		lines[i] = escapeMarkdownV2(line)
 	}
 	return strings.Join(lines, "\n")
 }
 
-func escapeTelegramMarkdownV2(text string) string {
+func escapeMarkdownV2(text string) string {
 	replacer := strings.NewReplacer(
 		"\\", "\\\\",
 		"_", "\\_",
@@ -394,7 +403,7 @@ func escapeTelegramMarkdownV2(text string) string {
 	return replacer.Replace(text)
 }
 
-func escapeTelegramCode(text string) string {
+func escapeCode(text string) string {
 	replacer := strings.NewReplacer(
 		"\\", "\\\\",
 		"`", "\\`",
@@ -402,7 +411,7 @@ func escapeTelegramCode(text string) string {
 	return replacer.Replace(text)
 }
 
-func escapeTelegramLinkURL(text string) string {
+func escapeLinkURL(text string) string {
 	replacer := strings.NewReplacer(
 		"\\", "\\\\",
 		")", "\\)",

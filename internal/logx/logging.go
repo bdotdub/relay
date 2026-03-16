@@ -1,4 +1,4 @@
-package main
+package logx
 
 import (
 	"fmt"
@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-func setLogLevel(name string) error {
-	level, err := parseLogLevel(name)
+func SetLevel(name string) error {
+	level, err := ParseLevel(name)
 	if err != nil {
 		return err
 	}
@@ -18,8 +18,8 @@ func setLogLevel(name string) error {
 	return nil
 }
 
-func parseLogLevel(name string) (slog.Level, error) {
-	switch normalized, err := normalizeLogLevel(name); {
+func ParseLevel(name string) (slog.Level, error) {
+	switch normalized, err := NormalizeLevel(name); {
 	case err != nil:
 		return slog.LevelInfo, err
 	case normalized == "debug":
@@ -35,7 +35,7 @@ func parseLogLevel(name string) (slog.Level, error) {
 	}
 }
 
-func normalizeLogLevel(name string) (string, error) {
+func NormalizeLevel(name string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "", "info":
 		return "info", nil
@@ -50,23 +50,23 @@ func normalizeLogLevel(name string) (string, error) {
 	}
 }
 
-func debugf(format string, args ...any) {
+func Debugf(format string, args ...any) {
 	slog.Debug(fmt.Sprintf(format, args...))
 }
 
-func infof(format string, args ...any) {
+func Infof(format string, args ...any) {
 	slog.Info(fmt.Sprintf(format, args...))
 }
 
-func warnf(format string, args ...any) {
+func Warnf(format string, args ...any) {
 	slog.Warn(fmt.Sprintf(format, args...))
 }
 
-func errorf(format string, args ...any) {
+func Errorf(format string, args ...any) {
 	slog.Error(fmt.Sprintf(format, args...))
 }
 
-func kvSummary(values ...any) string {
+func KVSummary(values ...any) string {
 	if len(values) == 0 {
 		return ""
 	}
@@ -74,5 +74,5 @@ func kvSummary(values ...any) string {
 	for index := 0; index+1 < len(values); index += 2 {
 		parts = append(parts, fmt.Sprintf("%v=%v", values[index], values[index+1]))
 	}
-	return stringsJoin(parts, " ")
+	return strings.Join(parts, " ")
 }

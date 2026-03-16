@@ -1,4 +1,4 @@
-package main
+package jsonrpc
 
 import (
 	"bufio"
@@ -21,11 +21,13 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/bdotdub/relay/internal/logx"
 )
 
-type jsonRPCClient struct {
-	writer    jsonRPCWriter
-	pending   map[uint64]chan jsonRPCResponse
+type Client struct {
+	writer    Writer
+	pending   map[uint64]chan response
 	pendingMu sync.Mutex
 	nextID    atomic.Uint64
 	notifyCh  chan map[string]any
@@ -33,17 +35,17 @@ type jsonRPCClient struct {
 	closeFn   func() error
 }
 
-type jsonRPCWriter interface {
+type Writer interface {
 	WriteJSON(map[string]any) error
 }
 
-type jsonRPCResponse struct {
+type response struct {
 	result map[string]any
 	err    error
 }
 
-func newJSONRPCStdioClient(command []string) (*jsonRPCClient, error) {
-	debugf("starting codex app-server %s", kvSummary("command", stringsJoin(command, " ")))
+func NewStdioClient(command []string) (*Client, error) {
+	logx.Debugf("starting codex app-server %s", logx.KVSummary("command", strings.Join(command, " ")))
 	cmd := exec.Command(command[0], command[1:]...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -61,9 +63,9 @@ func newJSONRPCStdioClient(command []string) (*jsonRPCClient, error) {
 		return nil, fmt.Errorf("start codex app server: %w", err)
 	}
 
-	client := &jsonRPCClient{
+	client := &Client{
 		writer:   &stdioJSONRPCWriter{writer: stdin},
-		pending:  make(map[uint64]chan jsonRPCResponse),
+		pending:  make(map[uint64]chan response),
 		notifyCh: make(chan map[string]any, 256),
 		closeFn: func() error {
 			if cmd.Process != nil {
@@ -79,15 +81,15 @@ func newJSONRPCStdioClient(command []string) (*jsonRPCClient, error) {
 	return client, nil
 }
 
-func newJSONRPCWebSocketClient(rawURL string) (*jsonRPCClient, error) {
-	debugf("connecting codex websocket %s", kvSummary("url", rawURL))
+func NewWebSocketClient(rawURL string) (*Client, error) {
+	logx.Debugf("connecting codex websocket %s", logx.KVSummary("url", rawURL))
 	conn, err := dialWebSocket(rawURL)
 	if err != nil {
 		return nil, err
 	}
-	client := &jsonRPCClient{
+	client := &Client{
 		writer:   conn,
-		pending:  make(map[uint64]chan jsonRPCResponse),
+		pending:  make(map[uint64]chan response),
 		notifyCh: make(chan map[string]any, 256),
 		closeFn:  conn.Close,
 	}
@@ -95,9 +97,9 @@ func newJSONRPCWebSocketClient(rawURL string) (*jsonRPCClient, error) {
 	return client, nil
 }
 
-func (c *jsonRPCClient) request(ctx context.Context, method string, params map[string]any) (map[string]any, error) {
+func (c *Client) Request(ctx context.Context, method string, params map[string]any) (map[string]any, error) {
 	requestID := c.nextID.Add(1)
-	responseCh := make(chan jsonRPCResponse, 1)
+	responseCh := make(chan response, 1)
 
 	c.pendingMu.Lock()
 	c.pending[requestID] = responseCh
@@ -109,7 +111,7 @@ func (c *jsonRPCClient) request(ctx context.Context, method string, params map[s
 		"method":  method,
 		"params":  params,
 	}
-	debugf("jsonrpc request %s", summarizeJSONRPCMessage(payload))
+	logx.Debugf("jsonrpc request %s", summarizeMessage(payload))
 	if err := c.writer.WriteJSON(payload); err != nil {
 		c.removePending(requestID)
 		return nil, err
@@ -118,7 +120,7 @@ func (c *jsonRPCClient) request(ctx context.Context, method string, params map[s
 	select {
 	case response := <-responseCh:
 		if response.err == nil {
-			debugf("jsonrpc response %s", kvSummary("method", method, "id", requestID))
+			logx.Debugf("jsonrpc response %s", logx.KVSummary("method", method, "id", requestID))
 		}
 		return response.result, response.err
 	case <-ctx.Done():
@@ -127,7 +129,7 @@ func (c *jsonRPCClient) request(ctx context.Context, method string, params map[s
 	}
 }
 
-func (c *jsonRPCClient) notify(method string, params map[string]any) error {
+func (c *Client) Notify(method string, params map[string]any) error {
 	payload := map[string]any{
 		"jsonrpc": "2.0",
 		"method":  method,
@@ -135,11 +137,11 @@ func (c *jsonRPCClient) notify(method string, params map[string]any) error {
 	if params != nil {
 		payload["params"] = params
 	}
-	debugf("jsonrpc notify %s", summarizeJSONRPCMessage(payload))
+	logx.Debugf("jsonrpc notify %s", summarizeMessage(payload))
 	return c.writer.WriteJSON(payload)
 }
 
-func (c *jsonRPCClient) nextNotification(ctx context.Context) (map[string]any, error) {
+func (c *Client) NextNotification(ctx context.Context) (map[string]any, error) {
 	select {
 	case notification, ok := <-c.notifyCh:
 		if !ok {
@@ -151,7 +153,7 @@ func (c *jsonRPCClient) nextNotification(ctx context.Context) (map[string]any, e
 	}
 }
 
-func (c *jsonRPCClient) close() error {
+func (c *Client) Close() error {
 	var err error
 	c.closeOnce.Do(func() {
 		err = c.closeFn()
@@ -161,7 +163,7 @@ func (c *jsonRPCClient) close() error {
 	return err
 }
 
-func (c *jsonRPCClient) readJSONLines(reader io.Reader) {
+func (c *Client) readJSONLines(reader io.Reader) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -170,13 +172,13 @@ func (c *jsonRPCClient) readJSONLines(reader io.Reader) {
 			continue
 		}
 		if err := c.routeIncoming([]byte(line)); err != nil {
-			warnf("failed to process JSON-RPC line: %v", err)
+			logx.Warnf("failed to process JSON-RPC line: %v", err)
 		}
 	}
 	c.failPending(errors.New("codex app-server stream closed"))
 }
 
-func (c *jsonRPCClient) readWebSocket(conn *webSocketConn) {
+func (c *Client) readWebSocket(conn *webSocketConn) {
 	for {
 		payload, err := conn.ReadText()
 		if err != nil {
@@ -184,12 +186,12 @@ func (c *jsonRPCClient) readWebSocket(conn *webSocketConn) {
 			return
 		}
 		if err := c.routeIncoming(payload); err != nil {
-			warnf("failed to process websocket JSON-RPC message: %v", err)
+			logx.Warnf("failed to process websocket JSON-RPC message: %v", err)
 		}
 	}
 }
 
-func (c *jsonRPCClient) routeIncoming(raw []byte) error {
+func (c *Client) routeIncoming(raw []byte) error {
 	var payload map[string]any
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return fmt.Errorf("decode JSON-RPC payload: %w", err)
@@ -207,35 +209,35 @@ func (c *jsonRPCClient) routeIncoming(raw []byte) error {
 			return nil
 		}
 		if errorValue, ok := payload["error"]; ok {
-			debugf("jsonrpc error %s", kvSummary("id", id, "error", summarizeValue(errorValue)))
-			responseCh <- jsonRPCResponse{err: fmt.Errorf("json-rpc error: %v", errorValue)}
+			logx.Debugf("jsonrpc error %s", logx.KVSummary("id", id, "error", summarizeValue(errorValue)))
+			responseCh <- response{err: fmt.Errorf("json-rpc error: %v", errorValue)}
 			return nil
 		}
 		result, _ := payload["result"].(map[string]any)
 		if result == nil {
 			result = map[string]any{}
 		}
-		responseCh <- jsonRPCResponse{result: result}
+		responseCh <- response{result: result}
 		return nil
 	}
 	if _, ok := payload["method"]; ok {
-		debugf("jsonrpc notification %s", summarizeJSONRPCMessage(payload))
+		logx.Debugf("jsonrpc notification %s", summarizeMessage(payload))
 		c.notifyCh <- payload
 	}
 	return nil
 }
 
-func (c *jsonRPCClient) removePending(id uint64) {
+func (c *Client) removePending(id uint64) {
 	c.pendingMu.Lock()
 	delete(c.pending, id)
 	c.pendingMu.Unlock()
 }
 
-func (c *jsonRPCClient) failPending(err error) {
+func (c *Client) failPending(err error) {
 	c.pendingMu.Lock()
 	defer c.pendingMu.Unlock()
 	for id, responseCh := range c.pending {
-		responseCh <- jsonRPCResponse{err: err}
+		responseCh <- response{err: err}
 		delete(c.pending, id)
 	}
 }
@@ -261,16 +263,16 @@ func (w *stdioJSONRPCWriter) WriteJSON(payload map[string]any) error {
 func logLines(reader io.Reader, prefix string) {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
-		debugf("%s: %s", prefix, scanner.Text())
+		logx.Debugf("%s: %s", prefix, scanner.Text())
 	}
 }
 
-func summarizeJSONRPCMessage(payload map[string]any) string {
+func summarizeMessage(payload map[string]any) string {
 	method, _ := payload["method"].(string)
 	id, _ := payload["id"]
 	params, _ := payload["params"].(map[string]any)
 	if params == nil {
-		return kvSummary("method", method, "id", id)
+		return logx.KVSummary("method", method, "id", id)
 	}
 
 	summary := []any{"method", method, "id", id}
@@ -285,21 +287,21 @@ func summarizeJSONRPCMessage(payload map[string]any) string {
 	}
 	if input, ok := params["input"].([]map[string]any); ok && len(input) > 0 {
 		if text, ok := input[0]["text"].(string); ok {
-			summary = append(summary, "text", summarizeText(text))
+			summary = append(summary, "text", logx.SummarizeText(text))
 		}
 	}
-	return kvSummary(summary...)
+	return logx.KVSummary(summary...)
 }
 
 func summarizeValue(value any) string {
 	switch typed := value.(type) {
 	case map[string]any:
 		if message, ok := typed["message"].(string); ok {
-			return summarizeText(message)
+			return logx.SummarizeText(message)
 		}
 		return "object"
 	case string:
-		return summarizeText(typed)
+		return logx.SummarizeText(typed)
 	default:
 		return fmt.Sprintf("%v", typed)
 	}

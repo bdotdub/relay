@@ -3,29 +3,28 @@ package main
 import (
 	"context"
 	"log"
+
+	"github.com/bdotdub/relay/internal/config"
+	"github.com/bdotdub/relay/internal/logx"
+	"github.com/bdotdub/relay/internal/relay"
 )
 
 func main() {
-	cfg, err := parseConfig()
+	cfg, err := config.Parse()
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := setLogLevel(cfg.logLevel); err != nil {
+	if err := logx.SetLevel(cfg.LogLevel); err != nil {
 		log.Fatal(err)
 	}
-	infof("starting relay %s", kvSummary(
-		"log_level", cfg.logLevel,
-		"start_app_server", cfg.codexStartAppServer,
-		"cwd", cfg.codexCWD,
-		"state_path", cfg.statePath,
+	logx.Infof("starting relay %s", logx.KVSummary(
+		"log_level", cfg.LogLevel,
+		"start_app_server", cfg.CodexStartAppServer,
+		"cwd", cfg.CodexCWD,
+		"state_path", cfg.StatePath,
 	))
 
-	app, err := newRelayApp(cfg)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if err := app.run(context.Background()); err != nil {
+	if err := relay.Run(context.Background(), cfg); err != nil {
 		log.Fatal(err)
 	}
 }

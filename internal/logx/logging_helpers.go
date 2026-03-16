@@ -1,7 +1,9 @@
-package main
+package logx
 
-func summarizeText(text string) string {
-	text = stringsTrimSpace(text)
+import "strings"
+
+func SummarizeText(text string) string {
+	text = strings.TrimSpace(text)
 	if text == "" {
 		return ""
 	}

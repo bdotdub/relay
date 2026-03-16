@@ -1,8 +1,10 @@
-package main
+package codex
 
 import (
 	"strings"
 	"testing"
+
+	"github.com/bdotdub/relay/internal/config"
 )
 
 func TestExtractTokenUsageFromTurnUsage(t *testing.T) {
@@ -18,7 +20,7 @@ func TestExtractTokenUsageFromTurnUsage(t *testing.T) {
 	if usage == nil {
 		t.Fatal("expected usage")
 	}
-	if usage.input != 11 || usage.output != 7 || usage.total != 18 {
+	if usage.Input != 11 || usage.Output != 7 || usage.Total != 18 {
 		t.Fatalf("unexpected usage: %#v", usage)
 	}
 }
@@ -33,23 +35,23 @@ func TestExtractTokenUsageComputesTotalWhenMissing(t *testing.T) {
 	if usage == nil {
 		t.Fatal("expected usage")
 	}
-	if usage.input != 5 || usage.output != 9 || usage.total != 14 {
+	if usage.Input != 5 || usage.Output != 9 || usage.Total != 14 {
 		t.Fatalf("unexpected usage: %#v", usage)
 	}
 }
 
 func TestBaseThreadParamsYoloOverridesSandboxAndApproval(t *testing.T) {
-	client := &codexClient{
-		cfg: config{
-			codexCWD:            "/tmp/project",
-			codexModel:          "gpt-5.3-codex-spark",
-			codexApprovalPolicy: "on-request",
-			codexSandbox:        "workspace-write",
-			codexPersonality:    "pragmatic",
+	client := &Client{
+		cfg: config.Config{
+			CodexCWD:            "/tmp/project",
+			CodexModel:          "gpt-5.3-codex-spark",
+			CodexApprovalPolicy: "on-request",
+			CodexSandbox:        "workspace-write",
+			CodexPersonality:    "pragmatic",
 		},
 	}
 
-	params := client.baseThreadParams(codexThreadOptions{yolo: true})
+	params := client.baseThreadParams(ThreadOptions{Yolo: true})
 
 	if got := params["approvalPolicy"]; got != "never" {
 		t.Fatalf("unexpected approval policy: %#v", got)
@@ -66,25 +68,25 @@ func TestBaseThreadParamsYoloOverridesSandboxAndApproval(t *testing.T) {
 }
 
 func TestMergedThreadConfigDropsPermissionProfileInYoloMode(t *testing.T) {
-	client := &codexClient{
-		cfg: config{
-			codexConfig: map[string]any{
+	client := &Client{
+		cfg: config.Config{
+			CodexConfig: map[string]any{
 				"permission_profile": map[string]any{
 					"network": map[string]any{"enabled": false},
 				},
 				"custom": "value",
 			},
-			codexNetworkEnabled: "false",
-			codexFsReadPaths:    []string{"/tmp/read"},
+			CodexNetworkEnabled: "false",
+			CodexFsReadPaths:    []string{"/tmp/read"},
 		},
 	}
 
-	normal := client.mergedThreadConfig(codexThreadOptions{})
+	normal := client.mergedThreadConfig(ThreadOptions{})
 	if _, ok := normal["permission_profile"]; !ok {
 		t.Fatalf("expected permission profile in normal config: %#v", normal)
 	}
 
-	yolo := client.mergedThreadConfig(codexThreadOptions{yolo: true})
+	yolo := client.mergedThreadConfig(ThreadOptions{Yolo: true})
 	if _, ok := yolo["permission_profile"]; ok {
 		t.Fatalf("did not expect permission profile in yolo config: %#v", yolo)
 	}
@@ -94,14 +96,14 @@ func TestMergedThreadConfigDropsPermissionProfileInYoloMode(t *testing.T) {
 }
 
 func TestBaseThreadParamsUsesPerThreadModelOverride(t *testing.T) {
-	client := &codexClient{
-		cfg: config{
-			codexCWD:   "/tmp/project",
-			codexModel: "gpt-5.3-codex-spark",
+	client := &Client{
+		cfg: config.Config{
+			CodexCWD:   "/tmp/project",
+			CodexModel: "gpt-5.3-codex-spark",
 		},
 	}
 
-	params := client.baseThreadParams(codexThreadOptions{model: "gpt-5"})
+	params := client.baseThreadParams(ThreadOptions{Model: "gpt-5"})
 
 	if got := params["model"]; got != "gpt-5" {
 		t.Fatalf("unexpected model: %#v", got)
@@ -109,14 +111,14 @@ func TestBaseThreadParamsUsesPerThreadModelOverride(t *testing.T) {
 }
 
 func TestBaseThreadParamsAppendsRelayDeveloperInstructions(t *testing.T) {
-	client := &codexClient{
-		cfg: config{
-			codexCWD:                   "/tmp/project",
-			codexDeveloperInstructions: "Prefer concise answers.",
+	client := &Client{
+		cfg: config.Config{
+			CodexCWD:                   "/tmp/project",
+			CodexDeveloperInstructions: "Prefer concise answers.",
 		},
 	}
 
-	params := client.baseThreadParams(codexThreadOptions{})
+	params := client.baseThreadParams(ThreadOptions{})
 
 	got, ok := params["developerInstructions"].(string)
 	if !ok {
