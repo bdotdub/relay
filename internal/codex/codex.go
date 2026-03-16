@@ -2,9 +2,9 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 	"sync"
 
@@ -45,7 +45,7 @@ type TurnHandle struct {
 type turnSubscription struct {
 	threadID      string
 	turnID        string
-	notifications chan map[string]any
+	notifications chan jsonrpc.Notification
 	eventCh       chan TurnStreamEvent
 	resultCh      chan TurnResult
 	stopCh        chan error
@@ -69,6 +69,102 @@ type TokenUsage struct {
 	Input  int64
 	Output int64
 	Total  int64
+}
+
+type initializeParams struct {
+	ClientInfo struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+	} `json:"clientInfo"`
+}
+
+type threadIDResponse struct {
+	Thread struct {
+		ID string `json:"id"`
+	} `json:"thread"`
+}
+
+type turnIDResponse struct {
+	Turn struct {
+		ID string `json:"id"`
+	} `json:"turn"`
+}
+
+type turnInput struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type turnStartParams struct {
+	ThreadID string      `json:"threadId"`
+	Input    []turnInput `json:"input"`
+}
+
+type turnSteerParams struct {
+	ThreadID       string      `json:"threadId"`
+	ExpectedTurnID string      `json:"expectedTurnId"`
+	Input          []turnInput `json:"input"`
+}
+
+type threadNotificationParams struct {
+	ThreadID string `json:"threadId"`
+	TurnID   string `json:"turnId,omitempty"`
+}
+
+type deltaNotificationParams struct {
+	ThreadID string `json:"threadId"`
+	TurnID   string `json:"turnId,omitempty"`
+	Delta    string `json:"delta"`
+}
+
+type completedItemParams struct {
+	ThreadID string `json:"threadId"`
+	TurnID   string `json:"turnId,omitempty"`
+	Item     struct {
+		Type  string `json:"type"`
+		Text  string `json:"text"`
+		Phase string `json:"phase"`
+	} `json:"item"`
+}
+
+type errorNotificationParams struct {
+	ThreadID string `json:"threadId"`
+	TurnID   string `json:"turnId,omitempty"`
+	Error    struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+type usageCarrier struct {
+	Usage *protocolUsage `json:"usage,omitempty"`
+	Turn  *struct {
+		Status string `json:"status"`
+		Error  *struct {
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+		Usage *protocolUsage `json:"usage,omitempty"`
+	} `json:"turn,omitempty"`
+}
+
+type turnCompletedParams struct {
+	ThreadID string `json:"threadId"`
+	TurnID   string `json:"turnId,omitempty"`
+	usageCarrier
+}
+
+type protocolUsage struct {
+	InputTokens       *int64 `json:"inputTokens,omitempty"`
+	InputTokensSnake  *int64 `json:"input_tokens,omitempty"`
+	PromptTokens      *int64 `json:"promptTokens,omitempty"`
+	PromptTokensSnake *int64 `json:"prompt_tokens,omitempty"`
+
+	OutputTokens          *int64 `json:"outputTokens,omitempty"`
+	OutputTokensSnake     *int64 `json:"output_tokens,omitempty"`
+	CompletionTokens      *int64 `json:"completionTokens,omitempty"`
+	CompletionTokensSnake *int64 `json:"completion_tokens,omitempty"`
+
+	TotalTokens      *int64 `json:"totalTokens,omitempty"`
+	TotalTokensSnake *int64 `json:"total_tokens,omitempty"`
 }
 
 const relayDeveloperInstructions = "This Codex session is relayed through Telegram, and the user interacts with it there. Telegram messages are rendered with MarkdownV2. When you include a link, prefer the Markdown link form \"[label](url)\" so it renders correctly in Telegram. Do not include local filesystem paths unless they are truly necessary, because the user is interacting through Telegram rather than a shared local workspace."
@@ -108,26 +204,23 @@ func (c *Client) Close() error {
 }
 
 func (c *Client) initialize(ctx context.Context) error {
-	_, err := c.rpc.Request(ctx, "initialize", map[string]any{
-		"clientInfo": map[string]any{
-			"name":    "telegram-codex-relay",
-			"version": "0.1.0",
-		},
-	})
-	if err != nil {
+	params := initializeParams{}
+	params.ClientInfo.Name = "telegram-codex-relay"
+	params.ClientInfo.Version = "0.1.0"
+	if err := c.rpc.Request(ctx, "initialize", params, nil); err != nil {
 		return err
 	}
 	return c.rpc.Notify("initialized", nil)
 }
 
 func (c *Client) NewThread(ctx context.Context, options ThreadOptions) (string, error) {
-	response, err := c.rpc.Request(ctx, "thread/start", c.newThreadParams(options))
-	if err != nil {
+	var response threadIDResponse
+	if err := c.rpc.Request(ctx, "thread/start", c.newThreadParams(options), &response); err != nil {
 		return "", err
 	}
-	threadID, err := extractNestedString(response, "thread", "id")
-	if err != nil {
-		return "", err
+	threadID := response.Thread.ID
+	if threadID == "" {
+		return "", errors.New("missing thread.id")
 	}
 	c.loadedMu.Lock()
 	c.loadedThreads[threadID] = struct{}{}
@@ -149,7 +242,7 @@ func (c *Client) EnsureThread(ctx context.Context, threadID string, options Thre
 
 	params := c.resumeThreadParams(options)
 	params["threadId"] = threadID
-	if _, err := c.rpc.Request(ctx, "thread/resume", params); err == nil {
+	if err := c.rpc.Request(ctx, "thread/resume", params, nil); err == nil {
 		c.loadedMu.Lock()
 		c.loadedThreads[threadID] = struct{}{}
 		c.loadedMu.Unlock()
@@ -163,7 +256,7 @@ func (c *Client) EnsureThread(ctx context.Context, threadID string, options Thre
 func (c *Client) StartTurn(ctx context.Context, threadID string, userText string) (*TurnHandle, error) {
 	subscription := &turnSubscription{
 		threadID:      threadID,
-		notifications: make(chan map[string]any, 128),
+		notifications: make(chan jsonrpc.Notification, 128),
 		eventCh:       make(chan TurnStreamEvent, 32),
 		resultCh:      make(chan TurnResult, 1),
 		stopCh:        make(chan error, 1),
@@ -177,24 +270,20 @@ func (c *Client) StartTurn(ctx context.Context, threadID string, userText string
 	c.activeTurns[threadID] = subscription
 	c.activeTurnsMu.Unlock()
 
-	response, err := c.rpc.Request(ctx, "turn/start", map[string]any{
-		"threadId": threadID,
-		"input": []map[string]any{
-			{
-				"type": "text",
-				"text": userText,
-			},
-		},
-	})
-	if err != nil {
+	params := turnStartParams{
+		ThreadID: threadID,
+		Input:    []turnInput{{Type: "text", Text: userText}},
+	}
+	var response turnIDResponse
+	if err := c.rpc.Request(ctx, "turn/start", params, &response); err != nil {
 		c.removeActiveTurn(threadID)
 		return nil, err
 	}
 
-	turnID, err := extractNestedString(response, "turn", "id")
-	if err != nil {
+	turnID := response.Turn.ID
+	if turnID == "" {
 		c.removeActiveTurn(threadID)
-		return nil, err
+		return nil, errors.New("missing turn.id")
 	}
 	subscription.turnID = turnID
 	logx.Debugf("codex turn started %s", logx.KVSummary("thread_id", threadID, "turn_id", turnID, "text", logx.SummarizeText(userText)))
@@ -210,17 +299,11 @@ func (c *Client) StartTurn(ctx context.Context, threadID string, userText string
 
 func (c *Client) SteerTurn(ctx context.Context, threadID string, turnID string, userText string) error {
 	logx.Debugf("codex turn steer %s", logx.KVSummary("thread_id", threadID, "turn_id", turnID, "text", logx.SummarizeText(userText)))
-	_, err := c.rpc.Request(ctx, "turn/steer", map[string]any{
-		"threadId":       threadID,
-		"expectedTurnId": turnID,
-		"input": []map[string]any{
-			{
-				"type": "text",
-				"text": userText,
-			},
-		},
-	})
-	return err
+	return c.rpc.Request(ctx, "turn/steer", turnSteerParams{
+		ThreadID:       threadID,
+		ExpectedTurnID: turnID,
+		Input:          []turnInput{{Type: "text", Text: userText}},
+	}, nil)
 }
 
 func (c *Client) dispatchNotifications(ctx context.Context) {
@@ -233,24 +316,21 @@ func (c *Client) dispatchNotifications(ctx context.Context) {
 			return
 		}
 
-		params, _ := notification["params"].(map[string]any)
-		if params == nil {
+		var params threadNotificationParams
+		if err := json.Unmarshal(notification.Params, &params); err != nil {
 			continue
 		}
-		threadID, _ := params["threadId"].(string)
-		if threadID == "" {
+		if params.ThreadID == "" {
 			continue
 		}
 
 		c.activeTurnsMu.Lock()
-		subscription := c.activeTurns[threadID]
+		subscription := c.activeTurns[params.ThreadID]
 		c.activeTurnsMu.Unlock()
 		if subscription == nil {
 			continue
 		}
-		turnID, _ := params["turnId"].(string)
-		method, _ := notification["method"].(string)
-		logx.Debugf("codex notification routed %s", logx.KVSummary("method", method, "thread_id", threadID, "turn_id", turnID))
+		logx.Debugf("codex notification routed %s", logx.KVSummary("method", notification.Method, "thread_id", params.ThreadID, "turn_id", params.TurnID))
 
 		select {
 		case subscription.notifications <- notification:
@@ -278,60 +358,59 @@ func (c *Client) collectTurnResult(subscription *turnSubscription) {
 			close(subscription.resultCh)
 			return
 		case notification := <-subscription.notifications:
-			params, _ := notification["params"].(map[string]any)
-			if params == nil {
-				continue
-			}
-			if notificationTurnID, ok := params["turnId"].(string); ok && subscription.turnID != "" && notificationTurnID != subscription.turnID {
-				continue
-			}
-
-			method, _ := notification["method"].(string)
-			switch method {
+			switch notification.Method {
 			case "item/agentMessage/delta":
-				delta, _ := params["delta"].(string)
-				deltas += delta
+				var params deltaNotificationParams
+				if !decodeNotificationParams(notification, &params) || !matchesTurn(params.TurnID, subscription.turnID) {
+					continue
+				}
+				deltas += params.Delta
 			case "item/plan/delta":
-				delta, _ := params["delta"].(string)
-				if strings.TrimSpace(delta) != "" {
-					planDeltas = append(planDeltas, delta)
+				var params deltaNotificationParams
+				if !decodeNotificationParams(notification, &params) || !matchesTurn(params.TurnID, subscription.turnID) {
+					continue
+				}
+				if strings.TrimSpace(params.Delta) != "" {
+					planDeltas = append(planDeltas, params.Delta)
 				}
 			case "item/reasoning/summaryTextDelta":
-				delta, _ := params["delta"].(string)
-				if strings.TrimSpace(delta) != "" {
-					reasoningSummaryDeltas = append(reasoningSummaryDeltas, delta)
+				var params deltaNotificationParams
+				if !decodeNotificationParams(notification, &params) || !matchesTurn(params.TurnID, subscription.turnID) {
+					continue
+				}
+				if strings.TrimSpace(params.Delta) != "" {
+					reasoningSummaryDeltas = append(reasoningSummaryDeltas, params.Delta)
 				}
 			case "item/completed":
-				item, _ := params["item"].(map[string]any)
-				if item == nil {
+				var params completedItemParams
+				if !decodeNotificationParams(notification, &params) || !matchesTurn(params.TurnID, subscription.turnID) {
 					continue
 				}
-				if itemType, _ := item["type"].(string); itemType != "agentMessage" {
+				if params.Item.Type != "agentMessage" {
 					continue
 				}
-				text, _ := item["text"].(string)
-				phase, _ := item["phase"].(string)
 				completedMessages = append(completedMessages, agentMessage{
-					phase: phase,
-					text:  text,
+					phase: params.Item.Phase,
+					text:  params.Item.Text,
 				})
-				if eventText := formatIntermediateTurnEvent(phase, text); eventText != "" {
+				if eventText := formatIntermediateTurnEvent(params.Item.Phase, params.Item.Text); eventText != "" {
 					subscription.eventCh <- TurnStreamEvent{Text: eventText}
 				}
 			case "error":
-				errorObject, _ := params["error"].(map[string]any)
-				if errorObject != nil {
-					errorMessage, _ = errorObject["message"].(string)
+				var params errorNotificationParams
+				if !decodeNotificationParams(notification, &params) || !matchesTurn(params.TurnID, subscription.turnID) {
+					continue
 				}
+				errorMessage = params.Error.Message
 			case "turn/completed":
-				if turnObject, _ := params["turn"].(map[string]any); turnObject != nil && errorMessage == "" {
-					if status, _ := turnObject["status"].(string); status == "failed" {
-						if turnErr, _ := turnObject["error"].(map[string]any); turnErr != nil {
-							errorMessage, _ = turnErr["message"].(string)
-						}
-					}
+				var params turnCompletedParams
+				if !decodeNotificationParams(notification, &params) || !matchesTurn(params.TurnID, subscription.turnID) {
+					continue
 				}
-				usage = extractTokenUsage(params)
+				if params.Turn != nil && errorMessage == "" && params.Turn.Status == "failed" && params.Turn.Error != nil {
+					errorMessage = params.Turn.Error.Message
+				}
+				usage = extractTokenUsage(params.usageCarrier)
 				result := TurnResult{
 					Text:             finalTurnText(completedMessages, deltas),
 					ErrorMessage:     errorMessage,
@@ -443,38 +522,35 @@ func summarizeTokenUsage(usage *TokenUsage) string {
 	return strings.Join(parts, " ")
 }
 
-func extractTokenUsage(params map[string]any) *TokenUsage {
-	candidates := []map[string]any{params}
-	if usage, ok := params["usage"].(map[string]any); ok {
-		candidates = append(candidates, usage)
-	}
-	if turn, ok := params["turn"].(map[string]any); ok {
-		candidates = append(candidates, turn)
-		if usage, ok := turn["usage"].(map[string]any); ok {
-			candidates = append(candidates, usage)
-		}
-	}
-
+func extractTokenUsage(payload usageCarrier) *TokenUsage {
 	var usage TokenUsage
 	var foundInput bool
 	var foundOutput bool
 	var foundTotal bool
 
+	candidates := []*protocolUsage{payload.Usage}
+	if payload.Turn != nil {
+		candidates = append(candidates, payload.Turn.Usage)
+	}
+
 	for _, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
 		if !foundInput {
-			if value, ok := extractUsageCount(candidate, "inputTokens", "input_tokens", "promptTokens", "prompt_tokens"); ok {
+			if value, ok := candidate.inputTokens(); ok {
 				usage.Input = value
 				foundInput = true
 			}
 		}
 		if !foundOutput {
-			if value, ok := extractUsageCount(candidate, "outputTokens", "output_tokens", "completionTokens", "completion_tokens"); ok {
+			if value, ok := candidate.outputTokens(); ok {
 				usage.Output = value
 				foundOutput = true
 			}
 		}
 		if !foundTotal {
-			if value, ok := extractUsageCount(candidate, "totalTokens", "total_tokens"); ok {
+			if value, ok := candidate.totalTokens(); ok {
 				usage.Total = value
 				foundTotal = true
 			}
@@ -489,19 +565,6 @@ func extractTokenUsage(params map[string]any) *TokenUsage {
 		return nil
 	}
 	return &usage
-}
-
-func extractUsageCount(values map[string]any, keys ...string) (int64, bool) {
-	for _, key := range keys {
-		raw, ok := values[key]
-		if !ok {
-			continue
-		}
-		if number, ok := numberToInt64(raw); ok {
-			return number, true
-		}
-	}
-	return 0, false
 }
 
 func (c *Client) baseThreadParams(options ThreadOptions) map[string]any {
@@ -613,39 +676,34 @@ func insertOptionalString(params map[string]any, key string, value string) {
 	}
 }
 
-func extractNestedString(object map[string]any, keys ...string) (string, error) {
-	current := any(object)
-	for _, key := range keys {
-		next, ok := current.(map[string]any)
-		if !ok {
-			return "", fmt.Errorf("missing %s", strings.Join(keys, "."))
-		}
-		current = next[key]
+func decodeNotificationParams[T any](notification jsonrpc.Notification, out *T) bool {
+	if err := json.Unmarshal(notification.Params, out); err != nil {
+		return false
 	}
-	value, ok := current.(string)
-	if !ok || value == "" {
-		return "", fmt.Errorf("missing %s", strings.Join(keys, "."))
-	}
-	return value, nil
+	return true
 }
 
-func numberToInt64(value any) (int64, bool) {
-	switch typed := value.(type) {
-	case float64:
-		if typed < math.MinInt64 || typed > math.MaxInt64 {
-			return 0, false
+func matchesTurn(notificationTurnID string, activeTurnID string) bool {
+	return notificationTurnID == "" || activeTurnID == "" || notificationTurnID == activeTurnID
+}
+
+func (u *protocolUsage) inputTokens() (int64, bool) {
+	return firstSet(u.InputTokens, u.InputTokensSnake, u.PromptTokens, u.PromptTokensSnake)
+}
+
+func (u *protocolUsage) outputTokens() (int64, bool) {
+	return firstSet(u.OutputTokens, u.OutputTokensSnake, u.CompletionTokens, u.CompletionTokensSnake)
+}
+
+func (u *protocolUsage) totalTokens() (int64, bool) {
+	return firstSet(u.TotalTokens, u.TotalTokensSnake)
+}
+
+func firstSet(values ...*int64) (int64, bool) {
+	for _, value := range values {
+		if value != nil {
+			return *value, true
 		}
-		return int64(typed), true
-	case int:
-		return int64(typed), true
-	case int64:
-		return typed, true
-	case uint64:
-		if typed > math.MaxInt64 {
-			return 0, false
-		}
-		return int64(typed), true
-	default:
-		return 0, false
 	}
+	return 0, false
 }

@@ -8,12 +8,21 @@ import (
 )
 
 func TestExtractTokenUsageFromTurnUsage(t *testing.T) {
-	usage := extractTokenUsage(map[string]any{
-		"turn": map[string]any{
-			"usage": map[string]any{
-				"input_tokens":  float64(11),
-				"output_tokens": float64(7),
-				"total_tokens":  float64(18),
+	input := int64(11)
+	output := int64(7)
+	total := int64(18)
+	usage := extractTokenUsage(usageCarrier{
+		Turn: &struct {
+			Status string `json:"status"`
+			Error  *struct {
+				Message string `json:"message"`
+			} `json:"error,omitempty"`
+			Usage *protocolUsage `json:"usage,omitempty"`
+		}{
+			Usage: &protocolUsage{
+				InputTokensSnake:  &input,
+				OutputTokensSnake: &output,
+				TotalTokensSnake:  &total,
 			},
 		},
 	})
@@ -26,10 +35,12 @@ func TestExtractTokenUsageFromTurnUsage(t *testing.T) {
 }
 
 func TestExtractTokenUsageComputesTotalWhenMissing(t *testing.T) {
-	usage := extractTokenUsage(map[string]any{
-		"usage": map[string]any{
-			"promptTokens":     float64(5),
-			"completionTokens": float64(9),
+	input := int64(5)
+	output := int64(9)
+	usage := extractTokenUsage(usageCarrier{
+		Usage: &protocolUsage{
+			PromptTokens:     &input,
+			CompletionTokens: &output,
 		},
 	})
 	if usage == nil {

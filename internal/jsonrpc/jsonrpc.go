@@ -30,19 +30,62 @@ type Client struct {
 	pending   map[uint64]chan response
 	pendingMu sync.Mutex
 	nextID    atomic.Uint64
-	notifyCh  chan map[string]any
+	notifyCh  chan Notification
 	doneCh    chan struct{}
 	closeOnce sync.Once
 	closeFn   func() error
 }
 
 type Writer interface {
-	WriteJSON(map[string]any) error
+	WriteJSON(any) error
 }
 
 type response struct {
-	result map[string]any
+	result json.RawMessage
 	err    error
+}
+
+type Notification struct {
+	Method string
+	Params json.RawMessage
+}
+
+type requestEnvelope struct {
+	JSONRPC string `json:"jsonrpc"`
+	ID      uint64 `json:"id"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
+}
+
+type notificationEnvelope struct {
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
+}
+
+type responseEnvelope struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Method  string          `json:"method,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *responseError  `json:"error,omitempty"`
+}
+
+type responseError struct {
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
+}
+
+func (e *responseError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Message == "" {
+		return fmt.Sprintf("json-rpc error %d", e.Code)
+	}
+	return fmt.Sprintf("json-rpc error %d: %s", e.Code, e.Message)
 }
 
 func NewStdioClient(ctx context.Context, command []string) (*Client, error) {
@@ -67,7 +110,7 @@ func NewStdioClient(ctx context.Context, command []string) (*Client, error) {
 	client := &Client{
 		writer:   &stdioJSONRPCWriter{writer: stdin},
 		pending:  make(map[uint64]chan response),
-		notifyCh: make(chan map[string]any, 256),
+		notifyCh: make(chan Notification, 256),
 		doneCh:   make(chan struct{}),
 		closeFn: func() error {
 			if cmd.Process != nil {
@@ -92,7 +135,7 @@ func NewWebSocketClient(rawURL string) (*Client, error) {
 	client := &Client{
 		writer:   conn,
 		pending:  make(map[uint64]chan response),
-		notifyCh: make(chan map[string]any, 256),
+		notifyCh: make(chan Notification, 256),
 		doneCh:   make(chan struct{}),
 		closeFn:  conn.Close,
 	}
@@ -100,7 +143,7 @@ func NewWebSocketClient(rawURL string) (*Client, error) {
 	return client, nil
 }
 
-func (c *Client) Request(ctx context.Context, method string, params map[string]any) (map[string]any, error) {
+func (c *Client) Request(ctx context.Context, method string, params any, out any) error {
 	requestID := c.nextID.Add(1)
 	responseCh := make(chan response, 1)
 
@@ -108,16 +151,16 @@ func (c *Client) Request(ctx context.Context, method string, params map[string]a
 	c.pending[requestID] = responseCh
 	c.pendingMu.Unlock()
 
-	payload := map[string]any{
-		"jsonrpc": "2.0",
-		"id":      requestID,
-		"method":  method,
-		"params":  params,
+	payload := requestEnvelope{
+		JSONRPC: "2.0",
+		ID:      requestID,
+		Method:  method,
+		Params:  params,
 	}
-	logx.Debugf("jsonrpc request %s", summarizeMessage(payload))
+	logx.Debugf("jsonrpc request %s", summarizeOutgoingMessage(method, requestID, params))
 	if err := c.writer.WriteJSON(payload); err != nil {
 		c.removePending(requestID)
-		return nil, err
+		return err
 	}
 
 	select {
@@ -125,36 +168,43 @@ func (c *Client) Request(ctx context.Context, method string, params map[string]a
 		if response.err == nil {
 			logx.Debugf("jsonrpc response %s", logx.KVSummary("method", method, "id", requestID))
 		}
-		return response.result, response.err
+		if response.err != nil {
+			return response.err
+		}
+		if out == nil || len(response.result) == 0 || string(response.result) == "null" {
+			return nil
+		}
+		if err := json.Unmarshal(response.result, out); err != nil {
+			return fmt.Errorf("decode JSON-RPC result %s: %w", method, err)
+		}
+		return nil
 	case <-ctx.Done():
 		c.removePending(requestID)
-		return nil, ctx.Err()
+		return ctx.Err()
 	}
 }
 
-func (c *Client) Notify(method string, params map[string]any) error {
-	payload := map[string]any{
-		"jsonrpc": "2.0",
-		"method":  method,
+func (c *Client) Notify(method string, params any) error {
+	payload := notificationEnvelope{
+		JSONRPC: "2.0",
+		Method:  method,
+		Params:  params,
 	}
-	if params != nil {
-		payload["params"] = params
-	}
-	logx.Debugf("jsonrpc notify %s", summarizeMessage(payload))
+	logx.Debugf("jsonrpc notify %s", summarizeOutgoingMessage(method, nil, params))
 	return c.writer.WriteJSON(payload)
 }
 
-func (c *Client) NextNotification(ctx context.Context) (map[string]any, error) {
+func (c *Client) NextNotification(ctx context.Context) (Notification, error) {
 	select {
 	case notification, ok := <-c.notifyCh:
 		if !ok {
-			return nil, io.EOF
+			return Notification{}, io.EOF
 		}
 		return notification, nil
 	case <-c.doneCh:
-		return nil, io.EOF
+		return Notification{}, io.EOF
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return Notification{}, ctx.Err()
 	}
 }
 
@@ -197,12 +247,12 @@ func (c *Client) readWebSocket(conn *webSocketConn) {
 }
 
 func (c *Client) routeIncoming(raw []byte) error {
-	var payload map[string]any
+	var payload responseEnvelope
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return fmt.Errorf("decode JSON-RPC payload: %w", err)
 	}
-	if idValue, ok := payload["id"]; ok {
-		id, ok := numberToUint64(idValue)
+	if len(payload.ID) > 0 {
+		id, ok := decodeResponseID(payload.ID)
 		if !ok {
 			return errors.New("received JSON-RPC response with non-numeric id")
 		}
@@ -213,23 +263,19 @@ func (c *Client) routeIncoming(raw []byte) error {
 		if responseCh == nil {
 			return nil
 		}
-		if errorValue, ok := payload["error"]; ok {
-			logx.Debugf("jsonrpc error %s", logx.KVSummary("id", id, "error", summarizeValue(errorValue)))
-			responseCh <- response{err: fmt.Errorf("json-rpc error: %v", errorValue)}
+		if payload.Error != nil {
+			logx.Debugf("jsonrpc error %s", logx.KVSummary("id", id, "error", summarizeValue(payload.Error)))
+			responseCh <- response{err: payload.Error}
 			return nil
 		}
-		result, _ := payload["result"].(map[string]any)
-		if result == nil {
-			result = map[string]any{}
-		}
-		responseCh <- response{result: result}
+		responseCh <- response{result: payload.Result}
 		return nil
 	}
-	if _, ok := payload["method"]; ok {
-		logx.Debugf("jsonrpc notification %s", summarizeMessage(payload))
+	if payload.Method != "" {
+		logx.Debugf("jsonrpc notification %s", summarizeIncomingNotification(payload))
 		select {
 		case <-c.doneCh:
-		case c.notifyCh <- payload:
+		case c.notifyCh <- Notification{Method: payload.Method, Params: payload.Params}:
 		}
 	}
 	return nil
@@ -255,7 +301,7 @@ type stdioJSONRPCWriter struct {
 	mu     sync.Mutex
 }
 
-func (w *stdioJSONRPCWriter) WriteJSON(payload map[string]any) error {
+func (w *stdioJSONRPCWriter) WriteJSON(payload any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal JSON-RPC payload: %w", err)
@@ -275,30 +321,67 @@ func logLines(reader io.Reader, prefix string) {
 	}
 }
 
-func summarizeMessage(payload map[string]any) string {
-	method, _ := payload["method"].(string)
-	id, _ := payload["id"]
-	params, _ := payload["params"].(map[string]any)
-	if params == nil {
-		return logx.KVSummary("method", method, "id", id)
-	}
-
+func summarizeOutgoingMessage(method string, id any, params any) string {
 	summary := []any{"method", method, "id", id}
-	if threadID, ok := params["threadId"]; ok {
-		summary = append(summary, "thread_id", threadID)
-	}
-	if turnID, ok := params["turnId"]; ok {
-		summary = append(summary, "turn_id", turnID)
-	}
-	if expectedTurnID, ok := params["expectedTurnId"]; ok {
-		summary = append(summary, "expected_turn_id", expectedTurnID)
-	}
-	if input, ok := params["input"].([]map[string]any); ok && len(input) > 0 {
-		if text, ok := input[0]["text"].(string); ok {
-			summary = append(summary, "text", logx.SummarizeText(text))
-		}
+	if paramsSummary := summarizeParams(params); len(paramsSummary) > 0 {
+		summary = append(summary, paramsSummary...)
 	}
 	return logx.KVSummary(summary...)
+}
+
+func summarizeIncomingNotification(payload responseEnvelope) string {
+	summary := []any{"method", payload.Method}
+	if paramsSummary := summarizeParams(payload.Params); len(paramsSummary) > 0 {
+		summary = append(summary, paramsSummary...)
+	}
+	return logx.KVSummary(summary...)
+}
+
+func summarizeParams(raw any) []any {
+	if raw == nil {
+		return nil
+	}
+
+	switch typed := raw.(type) {
+	case json.RawMessage:
+		var params struct {
+			ThreadID       string `json:"threadId"`
+			TurnID         string `json:"turnId"`
+			ExpectedTurnID string `json:"expectedTurnId"`
+			Input          []struct {
+				Text string `json:"text"`
+			} `json:"input"`
+		}
+		if err := json.Unmarshal(typed, &params); err != nil {
+			return nil
+		}
+		return summarizeParamFields(params.ThreadID, params.TurnID, params.ExpectedTurnID, params.Input)
+	default:
+		body, err := json.Marshal(raw)
+		if err != nil {
+			return nil
+		}
+		return summarizeParams(json.RawMessage(body))
+	}
+}
+
+func summarizeParamFields(threadID string, turnID string, expectedTurnID string, input []struct {
+	Text string `json:"text"`
+}) []any {
+	var summary []any
+	if threadID != "" {
+		summary = append(summary, "thread_id", threadID)
+	}
+	if turnID != "" {
+		summary = append(summary, "turn_id", turnID)
+	}
+	if expectedTurnID != "" {
+		summary = append(summary, "expected_turn_id", expectedTurnID)
+	}
+	if len(input) > 0 && input[0].Text != "" {
+		summary = append(summary, "text", logx.SummarizeText(input[0].Text))
+	}
+	return summary
 }
 
 func summarizeValue(value any) string {
@@ -313,6 +396,27 @@ func summarizeValue(value any) string {
 	default:
 		return fmt.Sprintf("%v", typed)
 	}
+}
+
+func decodeResponseID(raw json.RawMessage) (uint64, bool) {
+	var id uint64
+	if err := json.Unmarshal(raw, &id); err == nil {
+		return id, true
+	}
+
+	var signed int64
+	if err := json.Unmarshal(raw, &signed); err == nil {
+		if signed < 0 {
+			return 0, false
+		}
+		return uint64(signed), true
+	}
+
+	var floating float64
+	if err := json.Unmarshal(raw, &floating); err == nil {
+		return numberToUint64(floating)
+	}
+	return 0, false
 }
 
 func numberToUint64(value any) (uint64, bool) {
@@ -454,7 +558,7 @@ func (c *webSocketConn) Close() error {
 	return c.conn.Close()
 }
 
-func (c *webSocketConn) WriteJSON(payload map[string]any) error {
+func (c *webSocketConn) WriteJSON(payload any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal websocket JSON-RPC payload: %w", err)
