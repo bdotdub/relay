@@ -39,6 +39,26 @@ func TestTelegramMarkdownV2FormatsHeadingsAndCode(t *testing.T) {
 	}
 }
 
+func TestTelegramMarkdownV2PreservesMarkdownLinks(t *testing.T) {
+	text := "See [OpenAI](https://openai.com/docs) for details."
+	formatted := telegramMarkdownV2(text)
+
+	expected := "See [OpenAI](https://openai.com/docs) for details\\."
+	if formatted != expected {
+		t.Fatalf("unexpected formatted markdown:\nwant: %q\ngot:  %q", expected, formatted)
+	}
+}
+
+func TestTelegramMarkdownV2FormatsLists(t *testing.T) {
+	text := "- first item\n* second item\n1. step one\n2) step two"
+	formatted := telegramMarkdownV2(text)
+
+	expected := "• first item\n• second item\n1\\. step one\n2\\. step two"
+	if formatted != expected {
+		t.Fatalf("unexpected formatted markdown:\nwant: %q\ngot:  %q", expected, formatted)
+	}
+}
+
 func TestTelegramClientSendMessageUsesMarkdownV2(t *testing.T) {
 	var payload map[string]any
 	client := &telegramClient{

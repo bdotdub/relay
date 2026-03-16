@@ -228,6 +228,8 @@ func previousCharBoundary(text string, maxBytes int) int {
 }
 
 var telegramHeadingPattern = regexp.MustCompile(`^\s{0,3}#{1,6}\s+(.+?)\s*$`)
+var telegramUnorderedListPattern = regexp.MustCompile(`^\s{0,3}[-*+]\s+(.+?)\s*$`)
+var telegramOrderedListPattern = regexp.MustCompile(`^\s{0,3}(\d+)[.)]\s+(.+?)\s*$`)
 
 func telegramMarkdownV2(text string) string {
 	var out strings.Builder
@@ -248,12 +250,26 @@ func telegramMarkdownV2(text string) string {
 				continue
 			}
 		}
+		if strings.HasPrefix(text, "[") {
+			link, rest, ok := consumeTelegramLink(text)
+			if ok {
+				out.WriteString(link)
+				text = rest
+				continue
+			}
+			out.WriteString(escapeTelegramMarkdownV2(text[:1]))
+			text = text[1:]
+			continue
+		}
 
 		next := len(text)
 		if index := strings.Index(text, "```"); index >= 0 && index < next {
 			next = index
 		}
 		if index := strings.Index(text, "`"); index >= 0 && index < next {
+			next = index
+		}
+		if index := strings.Index(text, "["); index >= 0 && index < next {
 			next = index
 		}
 		out.WriteString(formatTelegramMarkdownPlain(text[:next]))
@@ -305,12 +321,47 @@ func consumeInlineCode(text string) (string, string, bool) {
 	return "`" + escapeTelegramCode(content) + "`", text[1+end+1:], true
 }
 
+func consumeTelegramLink(text string) (string, string, bool) {
+	if !strings.HasPrefix(text, "[") {
+		return "", text, false
+	}
+	labelEnd := strings.Index(text, "](")
+	if labelEnd <= 0 {
+		return "", text, false
+	}
+	urlStart := labelEnd + 2
+	urlEnd := strings.Index(text[urlStart:], ")")
+	if urlEnd < 0 {
+		return "", text, false
+	}
+	urlEnd += urlStart
+	label := text[1:labelEnd]
+	url := text[urlStart:urlEnd]
+	if strings.Contains(label, "\n") || strings.TrimSpace(label) == "" {
+		return "", text, false
+	}
+	if strings.Contains(url, "\n") || strings.TrimSpace(url) == "" {
+		return "", text, false
+	}
+	return "[" + escapeTelegramMarkdownV2(label) + "](" + escapeTelegramLinkURL(url) + ")", text[urlEnd+1:], true
+}
+
 func formatTelegramMarkdownPlain(text string) string {
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
 		matches := telegramHeadingPattern.FindStringSubmatch(line)
 		if len(matches) == 2 {
 			lines[i] = "*" + escapeTelegramMarkdownV2(matches[1]) + "*"
+			continue
+		}
+		matches = telegramUnorderedListPattern.FindStringSubmatch(line)
+		if len(matches) == 2 {
+			lines[i] = "• " + escapeTelegramMarkdownV2(matches[1])
+			continue
+		}
+		matches = telegramOrderedListPattern.FindStringSubmatch(line)
+		if len(matches) == 3 {
+			lines[i] = matches[1] + "\\. " + escapeTelegramMarkdownV2(matches[2])
 			continue
 		}
 		lines[i] = escapeTelegramMarkdownV2(line)
@@ -347,6 +398,14 @@ func escapeTelegramCode(text string) string {
 	replacer := strings.NewReplacer(
 		"\\", "\\\\",
 		"`", "\\`",
+	)
+	return replacer.Replace(text)
+}
+
+func escapeTelegramLinkURL(text string) string {
+	replacer := strings.NewReplacer(
+		"\\", "\\\\",
+		")", "\\)",
 	)
 	return replacer.Replace(text)
 }
