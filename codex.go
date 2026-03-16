@@ -66,6 +66,8 @@ type tokenUsage struct {
 	total  int64
 }
 
+const relayDeveloperInstructions = "This Codex session is relayed through Telegram, and the user interacts with it there. Telegram messages are rendered with MarkdownV2. When you include a link, prefer the Markdown link form \"[label](url)\" so it renders correctly in Telegram. Do not include local filesystem paths unless they are truly necessary, because the user is interacting through Telegram rather than a shared local workspace."
+
 func newCodexClient(cfg config) (*codexClient, error) {
 	var rpc *jsonRPCClient
 	var err error
@@ -512,11 +514,20 @@ func (c *codexClient) baseThreadParams(options codexThreadOptions) map[string]an
 	insertOptionalString(params, "personality", c.cfg.codexPersonality)
 	insertOptionalString(params, "serviceTier", c.cfg.codexServiceTier)
 	insertOptionalString(params, "baseInstructions", c.cfg.codexBaseInstructions)
-	insertOptionalString(params, "developerInstructions", c.cfg.codexDeveloperInstructions)
+	insertOptionalString(params, "developerInstructions", c.developerInstructions())
 	if merged := c.mergedThreadConfig(options); len(merged) > 0 {
 		params["config"] = merged
 	}
 	return params
+}
+
+func (c *codexClient) developerInstructions() string {
+	parts := make([]string, 0, 2)
+	if value := strings.TrimSpace(c.cfg.codexDeveloperInstructions); value != "" {
+		parts = append(parts, value)
+	}
+	parts = append(parts, relayDeveloperInstructions)
+	return strings.Join(parts, "\n\n")
 }
 
 func (c *codexClient) modelForOptions(options codexThreadOptions) string {

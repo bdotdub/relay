@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestExtractTokenUsageFromTurnUsage(t *testing.T) {
 	usage := extractTokenUsage(map[string]any{
@@ -102,5 +105,27 @@ func TestBaseThreadParamsUsesPerThreadModelOverride(t *testing.T) {
 
 	if got := params["model"]; got != "gpt-5" {
 		t.Fatalf("unexpected model: %#v", got)
+	}
+}
+
+func TestBaseThreadParamsAppendsRelayDeveloperInstructions(t *testing.T) {
+	client := &codexClient{
+		cfg: config{
+			codexCWD:                   "/tmp/project",
+			codexDeveloperInstructions: "Prefer concise answers.",
+		},
+	}
+
+	params := client.baseThreadParams(codexThreadOptions{})
+
+	got, ok := params["developerInstructions"].(string)
+	if !ok {
+		t.Fatalf("expected developer instructions string, got %#v", params["developerInstructions"])
+	}
+	if !strings.Contains(got, "Prefer concise answers.") {
+		t.Fatalf("expected configured developer instructions to be preserved, got %q", got)
+	}
+	if !strings.Contains(got, relayDeveloperInstructions) {
+		t.Fatalf("expected relay developer instructions to be appended, got %q", got)
 	}
 }

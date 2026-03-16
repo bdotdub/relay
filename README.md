@@ -9,6 +9,7 @@ Go service that relays messages between a Telegram bot and the Codex app server.
 - sends the Codex reply back to Telegram
 - keeps one Codex thread per Telegram chat
 - saves the chat-to-thread mapping in `.relay-state.json`
+- appends a Telegram-specific developer instruction so replies target Telegram MarkdownV2 rendering and avoid unnecessary local filesystem paths
 
 By default the relay starts `codex app-server` itself over `stdio`. It can also connect to an already-running app server over WebSocket.
 
