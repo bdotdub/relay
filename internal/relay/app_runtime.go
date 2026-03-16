@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -25,6 +26,9 @@ func (a *relayApp) run(ctx context.Context) error {
 	for {
 		updates, err := a.telegram.GetUpdates(ctx, offset, a.cfg.TelegramPollTimeoutSeconds)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
 			return err
 		}
 		for _, update := range updates {

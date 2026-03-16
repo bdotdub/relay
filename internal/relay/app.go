@@ -53,16 +53,16 @@ type relayState struct {
 }
 
 func Run(ctx context.Context, cfg config.Config) error {
-	app, err := newRelayApp(cfg)
+	app, err := newRelayApp(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	return app.run(ctx)
 }
 
-func newRelayApp(cfg config.Config) (*relayApp, error) {
+func newRelayApp(ctx context.Context, cfg config.Config) (*relayApp, error) {
 	telegramClient := telegram.NewClient(cfg.TelegramBotToken)
-	codexClient, err := codex.NewClient(cfg)
+	codexClient, err := codex.NewClient(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}

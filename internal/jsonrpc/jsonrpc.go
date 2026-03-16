@@ -31,6 +31,7 @@ type Client struct {
 	pendingMu sync.Mutex
 	nextID    atomic.Uint64
 	notifyCh  chan map[string]any
+	doneCh    chan struct{}
 	closeOnce sync.Once
 	closeFn   func() error
 }
@@ -44,9 +45,9 @@ type response struct {
 	err    error
 }
 
-func NewStdioClient(command []string) (*Client, error) {
+func NewStdioClient(ctx context.Context, command []string) (*Client, error) {
 	logx.Debugf("starting codex app-server %s", logx.KVSummary("command", strings.Join(command, " ")))
-	cmd := exec.Command(command[0], command[1:]...)
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("capture codex stdin: %w", err)
@@ -67,6 +68,7 @@ func NewStdioClient(command []string) (*Client, error) {
 		writer:   &stdioJSONRPCWriter{writer: stdin},
 		pending:  make(map[uint64]chan response),
 		notifyCh: make(chan map[string]any, 256),
+		doneCh:   make(chan struct{}),
 		closeFn: func() error {
 			if cmd.Process != nil {
 				_ = cmd.Process.Kill()
@@ -91,6 +93,7 @@ func NewWebSocketClient(rawURL string) (*Client, error) {
 		writer:   conn,
 		pending:  make(map[uint64]chan response),
 		notifyCh: make(chan map[string]any, 256),
+		doneCh:   make(chan struct{}),
 		closeFn:  conn.Close,
 	}
 	go client.readWebSocket(conn)
@@ -148,6 +151,8 @@ func (c *Client) NextNotification(ctx context.Context) (map[string]any, error) {
 			return nil, io.EOF
 		}
 		return notification, nil
+	case <-c.doneCh:
+		return nil, io.EOF
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -156,9 +161,9 @@ func (c *Client) NextNotification(ctx context.Context) (map[string]any, error) {
 func (c *Client) Close() error {
 	var err error
 	c.closeOnce.Do(func() {
-		err = c.closeFn()
-		close(c.notifyCh)
+		close(c.doneCh)
 		c.failPending(errors.New("codex transport closed"))
+		err = c.closeFn()
 	})
 	return err
 }
@@ -222,7 +227,10 @@ func (c *Client) routeIncoming(raw []byte) error {
 	}
 	if _, ok := payload["method"]; ok {
 		logx.Debugf("jsonrpc notification %s", summarizeMessage(payload))
-		c.notifyCh <- payload
+		select {
+		case <-c.doneCh:
+		case c.notifyCh <- payload:
+		}
 	}
 	return nil
 }

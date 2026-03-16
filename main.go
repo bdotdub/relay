@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/bdotdub/relay/internal/config"
 	"github.com/bdotdub/relay/internal/logx"
@@ -24,7 +28,12 @@ func main() {
 		"state_path", cfg.StatePath,
 	))
 
-	if err := relay.Run(context.Background(), cfg); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := relay.Run(ctx, cfg); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
 	}
+
+	logx.Infof("relay stopped")
 }

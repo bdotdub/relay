@@ -73,11 +73,11 @@ type TokenUsage struct {
 
 const relayDeveloperInstructions = "This Codex session is relayed through Telegram, and the user interacts with it there. Telegram messages are rendered with MarkdownV2. When you include a link, prefer the Markdown link form \"[label](url)\" so it renders correctly in Telegram. Do not include local filesystem paths unless they are truly necessary, because the user is interacting through Telegram rather than a shared local workspace."
 
-func NewClient(cfg config.Config) (*Client, error) {
+func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 	var rpc *jsonrpc.Client
 	var err error
 	if cfg.CodexStartAppServer {
-		rpc, err = jsonrpc.NewStdioClient(cfg.CodexAppServerCommand)
+		rpc, err = jsonrpc.NewStdioClient(ctx, cfg.CodexAppServerCommand)
 	} else {
 		rpc, err = jsonrpc.NewWebSocketClient(cfg.CodexAppServerWSURL)
 	}
@@ -91,12 +91,12 @@ func NewClient(cfg config.Config) (*Client, error) {
 		loadedThreads: make(map[string]struct{}),
 		activeTurns:   make(map[string]*turnSubscription),
 	}
-	if err := client.initialize(context.Background()); err != nil {
+	if err := client.initialize(ctx); err != nil {
 		_ = rpc.Close()
 		return nil, err
 	}
 	logx.Debugf("codex client ready")
-	go client.dispatchNotifications()
+	go client.dispatchNotifications(ctx)
 	return client, nil
 }
 
@@ -223,9 +223,9 @@ func (c *Client) SteerTurn(ctx context.Context, threadID string, turnID string, 
 	return err
 }
 
-func (c *Client) dispatchNotifications() {
+func (c *Client) dispatchNotifications(ctx context.Context) {
 	for {
-		notification, err := c.rpc.NextNotification(context.Background())
+		notification, err := c.rpc.NextNotification(ctx)
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
 				c.failActiveTurns(err)
