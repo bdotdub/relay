@@ -47,7 +47,7 @@ func newTelegramClient(token string) *telegramClient {
 }
 
 func (c *telegramClient) deleteWebhook(ctx context.Context, dropPending bool) error {
-	verbosef("telegram deleteWebhook %s", kvSummary("drop_pending", dropPending))
+	debugf("telegram deleteWebhook %s", kvSummary("drop_pending", dropPending))
 	payload := map[string]any{
 		"drop_pending_updates": dropPending,
 	}
@@ -56,7 +56,7 @@ func (c *telegramClient) deleteWebhook(ctx context.Context, dropPending bool) er
 }
 
 func (c *telegramClient) getUpdates(ctx context.Context, offset *int64, timeoutSeconds int) ([]telegramUpdate, error) {
-	verbosef("telegram getUpdates %s", kvSummary("offset", offsetValue(offset), "timeout", timeoutSeconds))
+	debugf("telegram getUpdates %s", kvSummary("offset", offsetValue(offset), "timeout", timeoutSeconds))
 	payload := map[string]any{
 		"timeout":         timeoutSeconds,
 		"allowed_updates": []string{"message"},
@@ -69,13 +69,13 @@ func (c *telegramClient) getUpdates(ctx context.Context, offset *int64, timeoutS
 		return nil, err
 	}
 	if len(result) > 0 {
-		verbosef("telegram getUpdates result %s", kvSummary("updates", len(result)))
+		debugf("telegram getUpdates result %s", kvSummary("updates", len(result)))
 	}
 	return result, nil
 }
 
 func (c *telegramClient) sendMessage(ctx context.Context, chatID int64, text string) error {
-	verbosef("telegram sendMessage %s", kvSummary(
+	debugf("telegram sendMessage %s", kvSummary(
 		"chat_id", chatID,
 		"text", summarizeText(text),
 	))
@@ -90,7 +90,7 @@ func (c *telegramClient) sendMessage(ctx context.Context, chatID int64, text str
 }
 
 func (c *telegramClient) sendChatAction(ctx context.Context, chatID int64, action string) error {
-	verbosef("telegram sendChatAction %s", kvSummary("chat_id", chatID, "action", action))
+	debugf("telegram sendChatAction %s", kvSummary("chat_id", chatID, "action", action))
 	payload := map[string]any{
 		"chat_id": chatID,
 		"action":  action,
@@ -130,7 +130,7 @@ func (c *telegramClient) call(ctx context.Context, method string, payload any, o
 		}
 		return fmt.Errorf("telegram request %s failed: %s", method, decoded.Description)
 	}
-	verbosef("telegram %s ok", method)
+	debugf("telegram %s ok", method)
 	if out == nil {
 		return nil
 	}

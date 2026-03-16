@@ -53,6 +53,8 @@ Core settings:
 
 - `TELEGRAM_BOT_TOKEN`: required
 - `TELEGRAM_ALLOWED_CHAT_IDS`: optional comma-separated allowlist
+- `RELAY_LOG_LEVEL`: optional internal log level; defaults to `info`
+- `RELAY_VERBOSE`: deprecated compatibility toggle for `RELAY_LOG_LEVEL=debug`
 - `RELAY_STATE_PATH`: optional path for the chat/thread mapping file
 - `CODEX_CWD`: working directory for Codex threads
 

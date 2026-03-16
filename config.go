@@ -12,7 +12,7 @@ import (
 )
 
 type config struct {
-	verbose                    bool
+	logLevel                   string
 	telegramBotToken           string
 	telegramAllowedChatIDs     map[int64]struct{}
 	telegramPollTimeoutSeconds int
@@ -40,6 +40,10 @@ type config struct {
 func parseConfig() (config, error) {
 	startDefault := envBool("CODEX_START_APP_SERVER", true)
 	ephemeralDefault := envBool("CODEX_EPHEMERAL_THREADS", false)
+	defaultLogLevel := "info"
+	if strings.TrimSpace(os.Getenv("RELAY_LOG_LEVEL")) == "" && envBool("RELAY_VERBOSE", false) {
+		defaultLogLevel = "debug"
+	}
 
 	var cfg config
 	var allowedChatIDs string
@@ -48,9 +52,11 @@ func parseConfig() (config, error) {
 	var codexFsRead, codexFsWrite string
 	var noStartAppServer bool
 	var noCodexEphemeralThreads bool
+	var verbose bool
 
-	flag.BoolVar(&cfg.verbose, "verbose", envBool("RELAY_VERBOSE", false), "Enable verbose introspection logging")
-	flag.BoolVar(&cfg.verbose, "v", envBool("RELAY_VERBOSE", false), "Enable verbose introspection logging")
+	flag.StringVar(&cfg.logLevel, "log-level", envString("RELAY_LOG_LEVEL", defaultLogLevel), "Set internal log level: debug, info, warn, or error")
+	flag.BoolVar(&verbose, "verbose", false, "Deprecated alias for --log-level=debug")
+	flag.BoolVar(&verbose, "v", false, "Deprecated alias for --log-level=debug")
 	flag.StringVar(&cfg.telegramBotToken, "telegram-bot-token", envString("TELEGRAM_BOT_TOKEN", ""), "Telegram bot token")
 	flag.StringVar(&allowedChatIDs, "telegram-allowed-chat-ids", envString("TELEGRAM_ALLOWED_CHAT_IDS", ""), "Comma-separated list of allowed Telegram chat IDs")
 	flag.IntVar(&cfg.telegramPollTimeoutSeconds, "telegram-poll-timeout-seconds", envInt("TELEGRAM_POLL_TIMEOUT_SECONDS", 30), "Telegram getUpdates timeout in seconds")
@@ -77,6 +83,14 @@ func parseConfig() (config, error) {
 	flag.StringVar(&codexFsWrite, "codex-fs-write", envString("CODEX_FS_WRITE", ""), "Comma-separated paths the agent may write (Codex permission profile)")
 	flag.Parse()
 
+	if verbose {
+		cfg.logLevel = "debug"
+	}
+	var err error
+	cfg.logLevel, err = normalizeLogLevel(cfg.logLevel)
+	if err != nil {
+		return config{}, err
+	}
 	cfg.codexFsReadPaths = parsePathList(codexFsRead)
 	cfg.codexFsWritePaths = parsePathList(codexFsWrite)
 
@@ -100,7 +114,6 @@ func parseConfig() (config, error) {
 		return config{}, errors.New("--telegram-poll-timeout-seconds must be positive")
 	}
 
-	var err error
 	cfg.telegramAllowedChatIDs, err = parseAllowedChatIDs(allowedChatIDs)
 	if err != nil {
 		return config{}, err

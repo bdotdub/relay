@@ -90,7 +90,7 @@ func newCodexClient(cfg config) (*codexClient, error) {
 		_ = rpc.close()
 		return nil, err
 	}
-	verbosef("codex client ready")
+	debugf("codex client ready")
 	go client.dispatchNotifications()
 	return client, nil
 }
@@ -127,7 +127,7 @@ func (c *codexClient) newThread(ctx context.Context, options codexThreadOptions)
 	c.loadedMu.Lock()
 	c.loadedThreads[threadID] = struct{}{}
 	c.loadedMu.Unlock()
-	verbosef("codex thread started %s", kvSummary("thread_id", threadID))
+	debugf("codex thread started %s", kvSummary("thread_id", threadID))
 	return threadID, nil
 }
 
@@ -148,10 +148,10 @@ func (c *codexClient) ensureThread(ctx context.Context, threadID string, options
 		c.loadedMu.Lock()
 		c.loadedThreads[threadID] = struct{}{}
 		c.loadedMu.Unlock()
-		verbosef("codex thread resumed %s", kvSummary("thread_id", threadID))
+		debugf("codex thread resumed %s", kvSummary("thread_id", threadID))
 		return threadID, nil
 	}
-	verbosef("codex thread resume failed; starting new thread %s", kvSummary("thread_id", threadID))
+	debugf("codex thread resume failed; starting new thread %s", kvSummary("thread_id", threadID))
 	return c.newThread(ctx, options)
 }
 
@@ -192,7 +192,7 @@ func (c *codexClient) startTurn(ctx context.Context, threadID string, userText s
 		return nil, err
 	}
 	subscription.turnID = turnID
-	verbosef("codex turn started %s", kvSummary("thread_id", threadID, "turn_id", turnID, "text", summarizeText(userText)))
+	debugf("codex turn started %s", kvSummary("thread_id", threadID, "turn_id", turnID, "text", summarizeText(userText)))
 	go c.collectTurnResult(subscription)
 
 	return &codexTurnHandle{
@@ -204,7 +204,7 @@ func (c *codexClient) startTurn(ctx context.Context, threadID string, userText s
 }
 
 func (c *codexClient) steerTurn(ctx context.Context, threadID string, turnID string, userText string) error {
-	verbosef("codex turn steer %s", kvSummary("thread_id", threadID, "turn_id", turnID, "text", summarizeText(userText)))
+	debugf("codex turn steer %s", kvSummary("thread_id", threadID, "turn_id", turnID, "text", summarizeText(userText)))
 	_, err := c.rpc.request(ctx, "turn/steer", map[string]any{
 		"threadId":       threadID,
 		"expectedTurnId": turnID,
@@ -245,7 +245,7 @@ func (c *codexClient) dispatchNotifications() {
 		}
 		turnID, _ := params["turnId"].(string)
 		method, _ := notification["method"].(string)
-		verbosef("codex notification routed %s", kvSummary("method", method, "thread_id", threadID, "turn_id", turnID))
+		debugf("codex notification routed %s", kvSummary("method", method, "thread_id", threadID, "turn_id", turnID))
 
 		select {
 		case subscription.notifications <- notification:
@@ -335,7 +335,7 @@ func (c *codexClient) collectTurnResult(subscription *codexTurnSubscription) {
 					reasoningSummary: stringsTrimSpace(strings.Join(reasoningSummaryDeltas, "")),
 					usage:            usage,
 				}
-				verbosef("codex turn completed %s", kvSummary(
+				debugf("codex turn completed %s", kvSummary(
 					"thread_id", subscription.threadID,
 					"turn_id", subscription.turnID,
 					"usage", summarizeTokenUsage(result.usage),

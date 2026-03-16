@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math"
 	mrand "math/rand"
 	"net"
@@ -44,7 +43,7 @@ type jsonRPCResponse struct {
 }
 
 func newJSONRPCStdioClient(command []string) (*jsonRPCClient, error) {
-	verbosef("starting codex app-server %s", kvSummary("command", stringsJoin(command, " ")))
+	debugf("starting codex app-server %s", kvSummary("command", stringsJoin(command, " ")))
 	cmd := exec.Command(command[0], command[1:]...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -81,7 +80,7 @@ func newJSONRPCStdioClient(command []string) (*jsonRPCClient, error) {
 }
 
 func newJSONRPCWebSocketClient(rawURL string) (*jsonRPCClient, error) {
-	verbosef("connecting codex websocket %s", kvSummary("url", rawURL))
+	debugf("connecting codex websocket %s", kvSummary("url", rawURL))
 	conn, err := dialWebSocket(rawURL)
 	if err != nil {
 		return nil, err
@@ -110,7 +109,7 @@ func (c *jsonRPCClient) request(ctx context.Context, method string, params map[s
 		"method":  method,
 		"params":  params,
 	}
-	verbosef("jsonrpc request %s", summarizeJSONRPCMessage(payload))
+	debugf("jsonrpc request %s", summarizeJSONRPCMessage(payload))
 	if err := c.writer.WriteJSON(payload); err != nil {
 		c.removePending(requestID)
 		return nil, err
@@ -119,7 +118,7 @@ func (c *jsonRPCClient) request(ctx context.Context, method string, params map[s
 	select {
 	case response := <-responseCh:
 		if response.err == nil {
-			verbosef("jsonrpc response %s", kvSummary("method", method, "id", requestID))
+			debugf("jsonrpc response %s", kvSummary("method", method, "id", requestID))
 		}
 		return response.result, response.err
 	case <-ctx.Done():
@@ -136,7 +135,7 @@ func (c *jsonRPCClient) notify(method string, params map[string]any) error {
 	if params != nil {
 		payload["params"] = params
 	}
-	verbosef("jsonrpc notify %s", summarizeJSONRPCMessage(payload))
+	debugf("jsonrpc notify %s", summarizeJSONRPCMessage(payload))
 	return c.writer.WriteJSON(payload)
 }
 
@@ -171,7 +170,7 @@ func (c *jsonRPCClient) readJSONLines(reader io.Reader) {
 			continue
 		}
 		if err := c.routeIncoming([]byte(line)); err != nil {
-			log.Printf("failed to process JSON-RPC line: %v", err)
+			warnf("failed to process JSON-RPC line: %v", err)
 		}
 	}
 	c.failPending(errors.New("codex app-server stream closed"))
@@ -185,7 +184,7 @@ func (c *jsonRPCClient) readWebSocket(conn *webSocketConn) {
 			return
 		}
 		if err := c.routeIncoming(payload); err != nil {
-			log.Printf("failed to process websocket JSON-RPC message: %v", err)
+			warnf("failed to process websocket JSON-RPC message: %v", err)
 		}
 	}
 }
@@ -208,7 +207,7 @@ func (c *jsonRPCClient) routeIncoming(raw []byte) error {
 			return nil
 		}
 		if errorValue, ok := payload["error"]; ok {
-			verbosef("jsonrpc error %s", kvSummary("id", id, "error", summarizeValue(errorValue)))
+			debugf("jsonrpc error %s", kvSummary("id", id, "error", summarizeValue(errorValue)))
 			responseCh <- jsonRPCResponse{err: fmt.Errorf("json-rpc error: %v", errorValue)}
 			return nil
 		}
@@ -220,7 +219,7 @@ func (c *jsonRPCClient) routeIncoming(raw []byte) error {
 		return nil
 	}
 	if _, ok := payload["method"]; ok {
-		verbosef("jsonrpc notification %s", summarizeJSONRPCMessage(payload))
+		debugf("jsonrpc notification %s", summarizeJSONRPCMessage(payload))
 		c.notifyCh <- payload
 	}
 	return nil
@@ -262,7 +261,7 @@ func (w *stdioJSONRPCWriter) WriteJSON(payload map[string]any) error {
 func logLines(reader io.Reader, prefix string) {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
-		verbosef("%s: %s", prefix, scanner.Text())
+		debugf("%s: %s", prefix, scanner.Text())
 	}
 }
 

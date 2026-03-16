@@ -10,8 +10,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	setVerboseLogging(cfg.verbose)
-	verbosef("starting relay %s", kvSummary(
+	if err := setLogLevel(cfg.logLevel); err != nil {
+		log.Fatal(err)
+	}
+	infof("starting relay %s", kvSummary(
+		"log_level", cfg.logLevel,
 		"start_app_server", cfg.codexStartAppServer,
 		"cwd", cfg.codexCWD,
 		"state_path", cfg.statePath,

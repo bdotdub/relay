@@ -104,7 +104,7 @@ func (a *relayApp) run(ctx context.Context) error {
 		for _, update := range updates {
 			nextOffset := update.UpdateID + 1
 			offset = &nextOffset
-			verbosef("telegram update received %s", kvSummary("update_id", update.UpdateID))
+			debugf("telegram update received %s", kvSummary("update_id", update.UpdateID))
 			if err := a.handleUpdate(ctx, update); err != nil {
 				return err
 			}
@@ -117,13 +117,13 @@ func (a *relayApp) handleUpdate(ctx context.Context, update telegramUpdate) erro
 		return nil
 	}
 	message := update.Message
-	verbosef("telegram message received %s", kvSummary(
+	debugf("telegram message received %s", kvSummary(
 		"chat_id", message.Chat.ID,
 		"message_id", message.MessageID,
 		"text", summarizeText(message.Text),
 	))
 	if !a.isChatAllowed(message.Chat.ID) {
-		verbosef("telegram message ignored %s", kvSummary("chat_id", message.Chat.ID, "reason", "chat_not_allowed"))
+		debugf("telegram message ignored %s", kvSummary("chat_id", message.Chat.ID, "reason", "chat_not_allowed"))
 		return nil
 	}
 	if stringsTrimSpace(message.Text) == "" {
@@ -131,7 +131,7 @@ func (a *relayApp) handleUpdate(ctx context.Context, update telegramUpdate) erro
 	}
 
 	worker := a.workerForChat(ctx, message.Chat.ID)
-	verbosef("dispatching message to chat worker %s", kvSummary("chat_id", message.Chat.ID, "command", len(message.Text) > 0 && message.Text[0] == '/'))
+	debugf("dispatching message to chat worker %s", kvSummary("chat_id", message.Chat.ID, "command", len(message.Text) > 0 && message.Text[0] == '/'))
 	worker.events <- chatEvent{
 		messageID: message.MessageID,
 		text:      message.Text,
@@ -155,7 +155,7 @@ func (a *relayApp) workerForChat(ctx context.Context, chatID int64) *chatWorker 
 		events: make(chan chatEvent, 64),
 	}
 	a.workers[chatID] = worker
-	verbosef("created chat worker %s", kvSummary("chat_id", chatID))
+	debugf("created chat worker %s", kvSummary("chat_id", chatID))
 	go worker.run(ctx)
 	return worker
 }
@@ -211,7 +211,7 @@ func (w *chatWorker) run(ctx context.Context) {
 
 func (w *chatWorker) handleEvent(ctx context.Context, event chatEvent, active *activeChatTurn) (*activeChatTurn, bool) {
 	if event.isCommand {
-		verbosef("chat worker handling command %s", kvSummary("chat_id", w.chatID, "message_id", event.messageID, "command", firstCommandToken(event.text)))
+		debugf("chat worker handling command %s", kvSummary("chat_id", w.chatID, "message_id", event.messageID, "command", firstCommandToken(event.text)))
 		if err := w.handleCommand(ctx, event.messageID, event.text); err != nil {
 			w.sendError(ctx, event.messageID, err)
 		}
@@ -219,7 +219,7 @@ func (w *chatWorker) handleEvent(ctx context.Context, event chatEvent, active *a
 	}
 
 	if active != nil {
-		verbosef("chat worker steering active turn %s", kvSummary("chat_id", w.chatID, "thread_id", active.threadID, "turn_id", active.turnID))
+		debugf("chat worker steering active turn %s", kvSummary("chat_id", w.chatID, "thread_id", active.threadID, "turn_id", active.turnID))
 		if err := w.app.codex.steerTurn(ctx, active.threadID, active.turnID, event.text); err != nil {
 			w.sendError(ctx, event.messageID, fmt.Errorf("steer codex turn: %w", err))
 		}
@@ -249,7 +249,7 @@ func (w *chatWorker) startTurn(ctx context.Context, messageID int64, text string
 		return nil, err
 	}
 
-	verbosef("chat worker started turn %s", kvSummary("chat_id", w.chatID, "thread_id", handle.ThreadID, "turn_id", handle.TurnID))
+	debugf("chat worker started turn %s", kvSummary("chat_id", w.chatID, "thread_id", handle.ThreadID, "turn_id", handle.TurnID))
 	return &activeChatTurn{
 		threadID:       handle.ThreadID,
 		turnID:         handle.TurnID,
@@ -264,7 +264,7 @@ func (w *chatWorker) startTypingLoop(ctx context.Context) func() {
 	typingCtx, cancel := context.WithCancel(ctx)
 	go func() {
 		if err := w.app.telegram.sendChatAction(typingCtx, w.chatID, "typing"); err != nil {
-			verbosef("telegram typing failed %s", kvSummary("chat_id", w.chatID, "error", err))
+			debugf("telegram typing failed %s", kvSummary("chat_id", w.chatID, "error", err))
 		}
 
 		ticker := time.NewTicker(4 * time.Second)
@@ -276,7 +276,7 @@ func (w *chatWorker) startTypingLoop(ctx context.Context) func() {
 				return
 			case <-ticker.C:
 				if err := w.app.telegram.sendChatAction(typingCtx, w.chatID, "typing"); err != nil {
-					verbosef("telegram typing failed %s", kvSummary("chat_id", w.chatID, "error", err))
+					debugf("telegram typing failed %s", kvSummary("chat_id", w.chatID, "error", err))
 				}
 			}
 		}
@@ -305,7 +305,7 @@ func (w *chatWorker) finishTurn(ctx context.Context, replyMessageID int64, resul
 	}
 
 	chunks := chunkMessage(reply, w.app.cfg.telegramMessageChunkSize)
-	verbosef("chat worker replying %s", kvSummary("chat_id", w.chatID, "chunks", len(chunks), "text", summarizeText(reply)))
+	debugf("chat worker replying %s", kvSummary("chat_id", w.chatID, "chunks", len(chunks), "text", summarizeText(reply)))
 	for _, chunk := range chunks {
 		if err := w.app.telegram.sendMessage(ctx, w.chatID, chunk); err != nil {
 			return
@@ -321,9 +321,9 @@ func (w *chatWorker) handleTurnEvent(ctx context.Context, replyMessageID int64, 
 	if text == "" {
 		return
 	}
-	verbosef("chat worker intermediate update %s", kvSummary("chat_id", w.chatID, "text", summarizeText(text)))
+	debugf("chat worker intermediate update %s", kvSummary("chat_id", w.chatID, "text", summarizeText(text)))
 	if err := w.app.telegram.sendMessage(ctx, w.chatID, text); err != nil {
-		verbosef("chat worker intermediate update failed %s", kvSummary("chat_id", w.chatID, "error", err))
+		debugf("chat worker intermediate update failed %s", kvSummary("chat_id", w.chatID, "error", err))
 	}
 }
 
@@ -416,7 +416,7 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 }
 
 func (w *chatWorker) sendError(ctx context.Context, replyMessageID int64, err error) {
-	verbosef("chat worker error %s", kvSummary("chat_id", w.chatID, "error", err))
+	debugf("chat worker error %s", kvSummary("chat_id", w.chatID, "error", err))
 	_ = w.app.telegram.sendMessage(ctx, w.chatID, fmt.Sprintf("Codex relay error: %v", err))
 }
 
@@ -525,7 +525,7 @@ func (a *relayApp) toggleVerboseForChat(chatID int64, text string) (bool, string
 	default:
 		return a.verboseByChat[chatID], "Usage: /verbose, /verbose on, /verbose off, or /verbose status"
 	}
-	verbosef("chat verbose mode changed %s", kvSummary("chat_id", chatID, "enabled", a.verboseByChat[chatID]))
+	debugf("chat verbose mode changed %s", kvSummary("chat_id", chatID, "enabled", a.verboseByChat[chatID]))
 
 	if a.verboseByChat[chatID] {
 		return true, ""
@@ -565,7 +565,7 @@ func (a *relayApp) toggleYoloForChat(chatID int64, text string) (bool, bool, str
 	a.yoloByChat[chatID] = next
 	a.stateMu.Unlock()
 
-	verbosef("chat yolo mode changed %s", kvSummary("chat_id", chatID, "enabled", next))
+	debugf("chat yolo mode changed %s", kvSummary("chat_id", chatID, "enabled", next))
 	if err := a.saveState(); err != nil {
 		a.stateMu.Lock()
 		if current {
@@ -608,7 +608,7 @@ func (a *relayApp) setModelForChat(chatID int64, text string) (string, bool, str
 	}
 	a.stateMu.Unlock()
 
-	verbosef("chat model changed %s", kvSummary("chat_id", chatID, "model", defaultString(nextOverride, a.cfg.codexModel)))
+	debugf("chat model changed %s", kvSummary("chat_id", chatID, "model", defaultString(nextOverride, a.cfg.codexModel)))
 	if err := a.saveState(); err != nil {
 		a.stateMu.Lock()
 		if currentOverride == "" {
