@@ -360,22 +360,78 @@ func formatMarkdownPlain(text string) string {
 	for i, line := range lines {
 		matches := headingPattern.FindStringSubmatch(line)
 		if len(matches) == 2 {
-			lines[i] = "*" + escapeMarkdownV2(matches[1]) + "*"
+			lines[i] = "*" + formatInlineMarkdown(matches[1]) + "*"
 			continue
 		}
 		matches = unorderedListPattern.FindStringSubmatch(line)
 		if len(matches) == 2 {
-			lines[i] = "• " + escapeMarkdownV2(matches[1])
+			lines[i] = "• " + formatInlineMarkdown(matches[1])
 			continue
 		}
 		matches = orderedListPattern.FindStringSubmatch(line)
 		if len(matches) == 3 {
-			lines[i] = matches[1] + "\\. " + escapeMarkdownV2(matches[2])
+			lines[i] = matches[1] + "\\. " + formatInlineMarkdown(matches[2])
 			continue
 		}
-		lines[i] = escapeMarkdownV2(line)
+		lines[i] = formatInlineMarkdown(line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func formatInlineMarkdown(text string) string {
+	var out strings.Builder
+	for len(text) > 0 {
+		if strings.HasPrefix(text, "**") {
+			bold, rest, ok := consumeInlineStyle(text, "**", "*")
+			if ok {
+				out.WriteString(bold)
+				text = rest
+				continue
+			}
+		}
+		if strings.HasPrefix(text, "_") {
+			italic, rest, ok := consumeInlineStyle(text, "_", "_")
+			if ok {
+				out.WriteString(italic)
+				text = rest
+				continue
+			}
+		}
+		if strings.HasPrefix(text, "*") && !strings.HasPrefix(text, "**") {
+			bold, rest, ok := consumeInlineStyle(text, "*", "*")
+			if ok {
+				out.WriteString(bold)
+				text = rest
+				continue
+			}
+		}
+
+		out.WriteString(escapeMarkdownV2(text[:1]))
+		text = text[1:]
+	}
+	return out.String()
+}
+
+func consumeInlineStyle(text, marker, replacement string) (string, string, bool) {
+	if !strings.HasPrefix(text, marker) {
+		return "", text, false
+	}
+
+	end := strings.Index(text[len(marker):], marker)
+	if end < 0 {
+		return "", text, false
+	}
+	end += len(marker)
+
+	content := text[len(marker):end]
+	if strings.Contains(content, "\n") || strings.TrimSpace(content) == "" {
+		return "", text, false
+	}
+	if strings.HasPrefix(content, " ") || strings.HasSuffix(content, " ") {
+		return "", text, false
+	}
+
+	return replacement + formatInlineMarkdown(content) + replacement, text[end+len(marker):], true
 }
 
 func escapeMarkdownV2(text string) string {

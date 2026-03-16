@@ -167,7 +167,7 @@ type protocolUsage struct {
 	TotalTokensSnake *int64 `json:"total_tokens,omitempty"`
 }
 
-const relayDeveloperInstructions = "This Codex session is relayed through Telegram, and the user interacts with it there. Telegram messages are rendered with MarkdownV2. When you include a link, prefer the Markdown link form \"[label](url)\" so it renders correctly in Telegram. Do not include local filesystem paths unless they are truly necessary, because the user is interacting through Telegram rather than a shared local workspace."
+const relayDeveloperInstructions = "This Codex session is relayed through Telegram, and the user interacts with it there. Telegram messages are rendered with MarkdownV2. Use Telegram emphasis syntax, not CommonMark: write bold as *bold* and italic as _italic_, not **bold** or *italic*. When you include a link, prefer the Markdown link form \"[label](url)\" so it renders correctly in Telegram. Do not include local filesystem paths unless they are truly necessary, because the user is interacting through Telegram rather than a shared local workspace."
 
 func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 	var rpc *jsonrpc.Client

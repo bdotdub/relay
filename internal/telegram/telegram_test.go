@@ -59,6 +59,16 @@ func TestTelegramMarkdownV2FormatsLists(t *testing.T) {
 	}
 }
 
+func TestTelegramMarkdownV2FormatsInlineEmphasis(t *testing.T) {
+	text := "Use **bold** and _italic_ and keep *already telegram bold*."
+	formatted := markdownV2(text)
+
+	expected := "Use *bold* and _italic_ and keep *already telegram bold*\\."
+	if formatted != expected {
+		t.Fatalf("unexpected formatted markdown:\nwant: %q\ngot:  %q", expected, formatted)
+	}
+}
+
 func TestTelegramClientSendMessageUsesMarkdownV2(t *testing.T) {
 	var payload map[string]any
 	client := &Client{
