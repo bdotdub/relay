@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -39,7 +40,11 @@ type Config struct {
 	CodexFsWritePaths   []string // absolute paths the agent may write
 }
 
-func Parse() (Config, error) {
+func Parse(args []string) (Config, error) {
+	return parse(args, io.Discard)
+}
+
+func parse(args []string, output io.Writer) (Config, error) {
 	startDefault := envBool("CODEX_START_APP_SERVER", true)
 	ephemeralDefault := envBool("CODEX_EPHEMERAL_THREADS", false)
 	defaultLogLevel := "info"
@@ -56,34 +61,39 @@ func Parse() (Config, error) {
 	var noCodexEphemeralThreads bool
 	var verbose bool
 
-	flag.StringVar(&cfg.LogLevel, "log-level", envString("RELAY_LOG_LEVEL", defaultLogLevel), "Set internal log level: debug, info, warn, or error")
-	flag.BoolVar(&verbose, "verbose", false, "Deprecated alias for --log-level=debug")
-	flag.BoolVar(&verbose, "v", false, "Deprecated alias for --log-level=debug")
-	flag.StringVar(&cfg.TelegramBotToken, "telegram-bot-token", envString("TELEGRAM_BOT_TOKEN", ""), "Telegram bot token")
-	flag.StringVar(&allowedChatIDs, "telegram-allowed-chat-ids", envString("TELEGRAM_ALLOWED_CHAT_IDS", ""), "Comma-separated list of allowed Telegram chat IDs")
-	flag.IntVar(&cfg.TelegramPollTimeoutSeconds, "telegram-poll-timeout-seconds", envInt("TELEGRAM_POLL_TIMEOUT_SECONDS", 30), "Telegram getUpdates timeout in seconds")
-	flag.IntVar(&cfg.TelegramMessageChunkSize, "telegram-message-chunk-size", envInt("TELEGRAM_MESSAGE_CHUNK_SIZE", 3900), "Maximum Telegram message chunk size")
-	flag.StringVar(&cfg.StatePath, "state-path", envString("RELAY_STATE_PATH", ".relay-state.json"), "Path to the chat/thread state file")
-	flag.StringVar(&cfg.CodexCWD, "codex-cwd", envString("CODEX_CWD", "."), "Working directory for Codex threads")
-	flag.BoolVar(&cfg.CodexStartAppServer, "start-app-server", startDefault, "Start a local Codex app-server subprocess")
-	flag.BoolVar(&noStartAppServer, "no-start-app-server", false, "Do not start a local Codex app-server subprocess")
-	flag.StringVar(&codexAppServerCommand, "codex-app-server-command", envString("CODEX_APP_SERVER_COMMAND", "codex app-server"), "Command used to start the Codex app server")
-	flag.StringVar(&cfg.CodexAppServerWSURL, "codex-app-server-ws-url", envString("CODEX_APP_SERVER_WS_URL", ""), "WebSocket URL for an already-running Codex app server")
-	flag.StringVar(&cfg.CodexModel, "codex-model", envString("CODEX_MODEL", "gpt-5.3-codex-spark"), "Codex model override")
-	flag.StringVar(&cfg.CodexPersonality, "codex-personality", envString("CODEX_PERSONALITY", "pragmatic"), "Optional Codex personality override")
-	flag.StringVar(&cfg.CodexSandbox, "codex-sandbox", envString("CODEX_SANDBOX", "workspace-write"), "Codex sandbox mode")
-	flag.StringVar(&cfg.CodexApprovalPolicy, "codex-approval-policy", envString("CODEX_APPROVAL_POLICY", "never"), "Codex approval policy")
-	flag.StringVar(&cfg.CodexServiceTier, "codex-service-tier", envString("CODEX_SERVICE_TIER", ""), "Optional Codex service tier override")
-	flag.StringVar(&cfg.CodexBaseInstructions, "codex-base-instructions", envString("CODEX_BASE_INSTRUCTIONS", ""), "Optional Codex base instructions")
-	flag.StringVar(&cfg.CodexDeveloperInstructions, "codex-developer-instructions", envString("CODEX_DEVELOPER_INSTRUCTIONS", ""), "Optional Codex developer instructions")
-	flag.StringVar(&codexConfigJSON, "codex-config-json", envString("CODEX_CONFIG_JSON", ""), "Optional JSON object passed as Codex thread config")
-	flag.BoolVar(&cfg.CodexEphemeralThreads, "codex-ephemeral-threads", ephemeralDefault, "Create ephemeral Codex threads")
-	flag.BoolVar(&noCodexEphemeralThreads, "no-codex-ephemeral-threads", false, "Persist Codex threads")
+	fs := flag.NewFlagSet("relay", flag.ContinueOnError)
+	fs.SetOutput(output)
+
+	fs.StringVar(&cfg.LogLevel, "log-level", envString("RELAY_LOG_LEVEL", defaultLogLevel), "Set internal log level: debug, info, warn, or error")
+	fs.BoolVar(&verbose, "verbose", false, "Deprecated alias for --log-level=debug")
+	fs.BoolVar(&verbose, "v", false, "Deprecated alias for --log-level=debug")
+	fs.StringVar(&cfg.TelegramBotToken, "telegram-bot-token", envString("TELEGRAM_BOT_TOKEN", ""), "Telegram bot token")
+	fs.StringVar(&allowedChatIDs, "telegram-allowed-chat-ids", envString("TELEGRAM_ALLOWED_CHAT_IDS", ""), "Comma-separated list of allowed Telegram chat IDs")
+	fs.IntVar(&cfg.TelegramPollTimeoutSeconds, "telegram-poll-timeout-seconds", envInt("TELEGRAM_POLL_TIMEOUT_SECONDS", 30), "Telegram getUpdates timeout in seconds")
+	fs.IntVar(&cfg.TelegramMessageChunkSize, "telegram-message-chunk-size", envInt("TELEGRAM_MESSAGE_CHUNK_SIZE", 3900), "Maximum Telegram message chunk size")
+	fs.StringVar(&cfg.StatePath, "state-path", envString("RELAY_STATE_PATH", ".relay-state.json"), "Path to the chat/thread state file")
+	fs.StringVar(&cfg.CodexCWD, "codex-cwd", envString("CODEX_CWD", "."), "Working directory for Codex threads")
+	fs.BoolVar(&cfg.CodexStartAppServer, "start-app-server", startDefault, "Start a local Codex app-server subprocess")
+	fs.BoolVar(&noStartAppServer, "no-start-app-server", false, "Do not start a local Codex app-server subprocess")
+	fs.StringVar(&codexAppServerCommand, "codex-app-server-command", envString("CODEX_APP_SERVER_COMMAND", "codex app-server"), "Command used to start the Codex app server")
+	fs.StringVar(&cfg.CodexAppServerWSURL, "codex-app-server-ws-url", envString("CODEX_APP_SERVER_WS_URL", ""), "WebSocket URL for an already-running Codex app server")
+	fs.StringVar(&cfg.CodexModel, "codex-model", envString("CODEX_MODEL", "gpt-5.3-codex-spark"), "Codex model override")
+	fs.StringVar(&cfg.CodexPersonality, "codex-personality", envString("CODEX_PERSONALITY", "pragmatic"), "Optional Codex personality override")
+	fs.StringVar(&cfg.CodexSandbox, "codex-sandbox", envString("CODEX_SANDBOX", "workspace-write"), "Codex sandbox mode")
+	fs.StringVar(&cfg.CodexApprovalPolicy, "codex-approval-policy", envString("CODEX_APPROVAL_POLICY", "never"), "Codex approval policy")
+	fs.StringVar(&cfg.CodexServiceTier, "codex-service-tier", envString("CODEX_SERVICE_TIER", ""), "Optional Codex service tier override")
+	fs.StringVar(&cfg.CodexBaseInstructions, "codex-base-instructions", envString("CODEX_BASE_INSTRUCTIONS", ""), "Optional Codex base instructions")
+	fs.StringVar(&cfg.CodexDeveloperInstructions, "codex-developer-instructions", envString("CODEX_DEVELOPER_INSTRUCTIONS", ""), "Optional Codex developer instructions")
+	fs.StringVar(&codexConfigJSON, "codex-config-json", envString("CODEX_CONFIG_JSON", ""), "Optional JSON object passed as Codex thread config")
+	fs.BoolVar(&cfg.CodexEphemeralThreads, "codex-ephemeral-threads", ephemeralDefault, "Create ephemeral Codex threads")
+	fs.BoolVar(&noCodexEphemeralThreads, "no-codex-ephemeral-threads", false, "Persist Codex threads")
 	// Codex permission profile
-	flag.StringVar(&cfg.CodexNetworkEnabled, "codex-network-enabled", envString("CODEX_NETWORK_ENABLED", ""), "Set to true/false to allow or deny network access (Codex permission profile)")
-	flag.StringVar(&codexFsRead, "codex-fs-read", envString("CODEX_FS_READ", ""), "Comma-separated paths the agent may read (Codex permission profile)")
-	flag.StringVar(&codexFsWrite, "codex-fs-write", envString("CODEX_FS_WRITE", ""), "Comma-separated paths the agent may write (Codex permission profile)")
-	flag.Parse()
+	fs.StringVar(&cfg.CodexNetworkEnabled, "codex-network-enabled", envString("CODEX_NETWORK_ENABLED", ""), "Set to true/false to allow or deny network access (Codex permission profile)")
+	fs.StringVar(&codexFsRead, "codex-fs-read", envString("CODEX_FS_READ", ""), "Comma-separated paths the agent may read (Codex permission profile)")
+	fs.StringVar(&codexFsWrite, "codex-fs-write", envString("CODEX_FS_WRITE", ""), "Comma-separated paths the agent may write (Codex permission profile)")
+	if err := fs.Parse(args); err != nil {
+		return Config{}, err
+	}
 
 	if verbose {
 		cfg.LogLevel = "debug"

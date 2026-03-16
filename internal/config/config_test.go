@@ -1,9 +1,6 @@
 package config
 
 import (
-	"flag"
-	"io"
-	"os"
 	"testing"
 )
 
@@ -80,19 +77,5 @@ func TestParseConfigRejectsInvalidLogLevel(t *testing.T) {
 
 func parseConfigForTest(t *testing.T, args ...string) (Config, error) {
 	t.Helper()
-
-	oldArgs := os.Args
-	oldCommandLine := flag.CommandLine
-
-	fs := flag.NewFlagSet(oldArgs[0], flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	flag.CommandLine = fs
-	os.Args = append([]string{oldArgs[0]}, args...)
-
-	t.Cleanup(func() {
-		os.Args = oldArgs
-		flag.CommandLine = oldCommandLine
-	})
-
-	return Parse()
+	return Parse(args)
 }

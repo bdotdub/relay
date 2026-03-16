@@ -50,29 +50,18 @@ func NormalizeLevel(name string) (string, error) {
 	}
 }
 
-func Debugf(format string, args ...any) {
-	slog.Debug(fmt.Sprintf(format, args...))
+func Debug(msg string, attrs ...any) {
+	slog.Debug(msg, attrs...)
 }
 
-func Infof(format string, args ...any) {
-	slog.Info(fmt.Sprintf(format, args...))
+func Info(msg string, attrs ...any) {
+	slog.Info(msg, attrs...)
 }
 
-func Warnf(format string, args ...any) {
-	slog.Warn(fmt.Sprintf(format, args...))
+func Warn(msg string, attrs ...any) {
+	slog.Warn(msg, attrs...)
 }
 
-func Errorf(format string, args ...any) {
-	slog.Error(fmt.Sprintf(format, args...))
-}
-
-func KVSummary(values ...any) string {
-	if len(values) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(values)/2)
-	for index := 0; index+1 < len(values); index += 2 {
-		parts = append(parts, fmt.Sprintf("%v=%v", values[index], values[index+1]))
-	}
-	return strings.Join(parts, " ")
+func Error(msg string, attrs ...any) {
+	slog.Error(msg, attrs...)
 }

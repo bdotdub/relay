@@ -175,7 +175,7 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 	if cfg.CodexStartAppServer {
 		rpc, err = jsonrpc.NewStdioClient(ctx, cfg.CodexAppServerCommand)
 	} else {
-		rpc, err = jsonrpc.NewWebSocketClient(cfg.CodexAppServerWSURL)
+		rpc, err = jsonrpc.NewWebSocketClient(ctx, cfg.CodexAppServerWSURL)
 	}
 	if err != nil {
 		return nil, err
@@ -191,7 +191,7 @@ func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 		_ = rpc.Close()
 		return nil, err
 	}
-	logx.Debugf("codex client ready")
+	logx.Debug("codex client ready")
 	go client.dispatchNotifications(ctx)
 	return client, nil
 }
@@ -225,7 +225,7 @@ func (c *Client) NewThread(ctx context.Context, options ThreadOptions) (string, 
 	c.loadedMu.Lock()
 	c.loadedThreads[threadID] = struct{}{}
 	c.loadedMu.Unlock()
-	logx.Debugf("codex thread started %s", logx.KVSummary("thread_id", threadID))
+	logx.Debug("codex thread started", "thread_id", threadID)
 	return threadID, nil
 }
 
@@ -246,10 +246,10 @@ func (c *Client) EnsureThread(ctx context.Context, threadID string, options Thre
 		c.loadedMu.Lock()
 		c.loadedThreads[threadID] = struct{}{}
 		c.loadedMu.Unlock()
-		logx.Debugf("codex thread resumed %s", logx.KVSummary("thread_id", threadID))
+		logx.Debug("codex thread resumed", "thread_id", threadID)
 		return threadID, nil
 	}
-	logx.Debugf("codex thread resume failed; starting new thread %s", logx.KVSummary("thread_id", threadID))
+	logx.Debug("codex thread resume failed; starting new thread", "thread_id", threadID)
 	return c.NewThread(ctx, options)
 }
 
@@ -286,7 +286,7 @@ func (c *Client) StartTurn(ctx context.Context, threadID string, userText string
 		return nil, errors.New("missing turn.id")
 	}
 	subscription.turnID = turnID
-	logx.Debugf("codex turn started %s", logx.KVSummary("thread_id", threadID, "turn_id", turnID, "text", logx.SummarizeText(userText)))
+	logx.Debug("codex turn started", "thread_id", threadID, "turn_id", turnID, "text", logx.SummarizeText(userText))
 	go c.collectTurnResult(subscription)
 
 	return &TurnHandle{
@@ -298,7 +298,7 @@ func (c *Client) StartTurn(ctx context.Context, threadID string, userText string
 }
 
 func (c *Client) SteerTurn(ctx context.Context, threadID string, turnID string, userText string) error {
-	logx.Debugf("codex turn steer %s", logx.KVSummary("thread_id", threadID, "turn_id", turnID, "text", logx.SummarizeText(userText)))
+	logx.Debug("codex turn steer", "thread_id", threadID, "turn_id", turnID, "text", logx.SummarizeText(userText))
 	return c.rpc.Request(ctx, "turn/steer", turnSteerParams{
 		ThreadID:       threadID,
 		ExpectedTurnID: turnID,
@@ -330,7 +330,7 @@ func (c *Client) dispatchNotifications(ctx context.Context) {
 		if subscription == nil {
 			continue
 		}
-		logx.Debugf("codex notification routed %s", logx.KVSummary("method", notification.Method, "thread_id", params.ThreadID, "turn_id", params.TurnID))
+		logx.Debug("codex notification routed", "method", notification.Method, "thread_id", params.ThreadID, "turn_id", params.TurnID)
 
 		select {
 		case subscription.notifications <- notification:
@@ -419,7 +419,7 @@ func (c *Client) collectTurnResult(subscription *turnSubscription) {
 					ReasoningSummary: strings.TrimSpace(strings.Join(reasoningSummaryDeltas, "")),
 					Usage:            usage,
 				}
-				logx.Debugf("codex turn completed %s", logx.KVSummary(
+				logx.Debug("codex turn completed",
 					"thread_id", subscription.threadID,
 					"turn_id", subscription.turnID,
 					"usage", summarizeTokenUsage(result.Usage),
@@ -427,7 +427,7 @@ func (c *Client) collectTurnResult(subscription *turnSubscription) {
 					"commentary", logx.SummarizeText(result.CommentaryText),
 					"plan", logx.SummarizeText(result.PlanText),
 					"reasoning_summary", logx.SummarizeText(result.ReasoningSummary),
-				))
+				)
 				subscription.resultCh <- result
 				close(subscription.resultCh)
 				return

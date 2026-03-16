@@ -56,7 +56,7 @@ func NewClient(token string) *Client {
 }
 
 func (c *Client) DeleteWebhook(ctx context.Context, dropPending bool) error {
-	logx.Debugf("telegram deleteWebhook %s", logx.KVSummary("drop_pending", dropPending))
+	logx.Debug("telegram deleteWebhook", "drop_pending", dropPending)
 	payload := map[string]any{
 		"drop_pending_updates": dropPending,
 	}
@@ -65,7 +65,7 @@ func (c *Client) DeleteWebhook(ctx context.Context, dropPending bool) error {
 }
 
 func (c *Client) GetUpdates(ctx context.Context, offset *int64, timeoutSeconds int) ([]Update, error) {
-	logx.Debugf("telegram getUpdates %s", logx.KVSummary("offset", offsetValue(offset), "timeout", timeoutSeconds))
+	logx.Debug("telegram getUpdates", "offset", offsetValue(offset), "timeout", timeoutSeconds)
 	payload := map[string]any{
 		"timeout":         timeoutSeconds,
 		"allowed_updates": []string{"message"},
@@ -78,16 +78,16 @@ func (c *Client) GetUpdates(ctx context.Context, offset *int64, timeoutSeconds i
 		return nil, err
 	}
 	if len(result) > 0 {
-		logx.Debugf("telegram getUpdates result %s", logx.KVSummary("updates", len(result)))
+		logx.Debug("telegram getUpdates result", "updates", len(result))
 	}
 	return result, nil
 }
 
 func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) error {
-	logx.Debugf("telegram sendMessage %s", logx.KVSummary(
+	logx.Debug("telegram sendMessage",
 		"chat_id", chatID,
 		"text", logx.SummarizeText(text),
-	))
+	)
 	payload := map[string]any{
 		"chat_id":                  chatID,
 		"text":                     markdownV2(text),
@@ -99,7 +99,7 @@ func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) err
 }
 
 func (c *Client) SendChatAction(ctx context.Context, chatID int64, action string) error {
-	logx.Debugf("telegram sendChatAction %s", logx.KVSummary("chat_id", chatID, "action", action))
+	logx.Debug("telegram sendChatAction", "chat_id", chatID, "action", action)
 	payload := map[string]any{
 		"chat_id": chatID,
 		"action":  action,
@@ -139,7 +139,7 @@ func (c *Client) call(ctx context.Context, method string, payload any, out any) 
 		}
 		return fmt.Errorf("telegram request %s failed: %s", method, decoded.Description)
 	}
-	logx.Debugf("telegram %s ok", method)
+	logx.Debug("telegram request ok", "method", method)
 	if out == nil {
 		return nil
 	}

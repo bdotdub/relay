@@ -72,7 +72,7 @@ func (a *relayApp) toggleVerboseForChat(chatID int64, text string) (bool, string
 	default:
 		return a.verboseByChat[chatID], "Usage: /verbose, /verbose on, /verbose off, or /verbose status"
 	}
-	logx.Debugf("chat verbose mode changed %s", logx.KVSummary("chat_id", chatID, "enabled", a.verboseByChat[chatID]))
+	logx.Debug("chat verbose mode changed", "chat_id", chatID, "enabled", a.verboseByChat[chatID])
 
 	if a.verboseByChat[chatID] {
 		return true, ""
@@ -112,7 +112,7 @@ func (a *relayApp) toggleYoloForChat(chatID int64, text string) (bool, bool, str
 	a.yoloByChat[chatID] = next
 	a.stateMu.Unlock()
 
-	logx.Debugf("chat yolo mode changed %s", logx.KVSummary("chat_id", chatID, "enabled", next))
+	logx.Debug("chat yolo mode changed", "chat_id", chatID, "enabled", next)
 	if err := a.saveState(); err != nil {
 		a.stateMu.Lock()
 		if current {
@@ -155,7 +155,7 @@ func (a *relayApp) setModelForChat(chatID int64, text string) (string, bool, str
 	}
 	a.stateMu.Unlock()
 
-	logx.Debugf("chat model changed %s", logx.KVSummary("chat_id", chatID, "model", defaultString(nextOverride, a.cfg.CodexModel)))
+	logx.Debug("chat model changed", "chat_id", chatID, "model", defaultString(nextOverride, a.cfg.CodexModel))
 	if err := a.saveState(); err != nil {
 		a.stateMu.Lock()
 		if currentOverride == "" {

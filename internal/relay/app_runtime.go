@@ -34,7 +34,7 @@ func (a *relayApp) run(ctx context.Context) error {
 		for _, update := range updates {
 			nextOffset := update.UpdateID + 1
 			offset = &nextOffset
-			logx.Debugf("telegram update received %s", logx.KVSummary("update_id", update.UpdateID))
+			logx.Debug("telegram update received", "update_id", update.UpdateID)
 			if err := a.handleUpdate(ctx, update); err != nil {
 				return err
 			}
@@ -47,13 +47,13 @@ func (a *relayApp) handleUpdate(ctx context.Context, update telegram.Update) err
 		return nil
 	}
 	message := update.Message
-	logx.Debugf("telegram message received %s", logx.KVSummary(
+	logx.Debug("telegram message received",
 		"chat_id", message.Chat.ID,
 		"message_id", message.MessageID,
 		"text", logx.SummarizeText(message.Text),
-	))
+	)
 	if !a.isChatAllowed(message.Chat.ID) {
-		logx.Debugf("telegram message ignored %s", logx.KVSummary("chat_id", message.Chat.ID, "reason", "chat_not_allowed"))
+		logx.Debug("telegram message ignored", "chat_id", message.Chat.ID, "reason", "chat_not_allowed")
 		return nil
 	}
 	if strings.TrimSpace(message.Text) == "" {
@@ -61,7 +61,7 @@ func (a *relayApp) handleUpdate(ctx context.Context, update telegram.Update) err
 	}
 
 	worker := a.workerForChat(ctx, message.Chat.ID)
-	logx.Debugf("dispatching message to chat worker %s", logx.KVSummary("chat_id", message.Chat.ID, "command", len(message.Text) > 0 && message.Text[0] == '/'))
+	logx.Debug("dispatching message to chat worker", "chat_id", message.Chat.ID, "command", len(message.Text) > 0 && message.Text[0] == '/')
 	worker.events <- chatEvent{
 		messageID: message.MessageID,
 		text:      message.Text,
@@ -85,7 +85,7 @@ func (a *relayApp) workerForChat(ctx context.Context, chatID int64) *chatWorker 
 		events: make(chan chatEvent, 64),
 	}
 	a.workers[chatID] = worker
-	logx.Infof("telegram chat connected %s", logx.KVSummary("chat_id", chatID))
+	logx.Info("telegram chat connected", "chat_id", chatID)
 	go worker.run(ctx)
 	return worker
 }
@@ -141,7 +141,7 @@ func (w *chatWorker) run(ctx context.Context) {
 
 func (w *chatWorker) handleEvent(ctx context.Context, event chatEvent, active *activeChatTurn) (*activeChatTurn, bool) {
 	if event.isCommand {
-		logx.Debugf("chat worker handling command %s", logx.KVSummary("chat_id", w.chatID, "message_id", event.messageID, "command", firstCommandToken(event.text)))
+		logx.Debug("chat worker handling command", "chat_id", w.chatID, "message_id", event.messageID, "command", firstCommandToken(event.text))
 		if err := w.handleCommand(ctx, event.messageID, event.text); err != nil {
 			w.sendError(ctx, event.messageID, err)
 		}
@@ -149,7 +149,7 @@ func (w *chatWorker) handleEvent(ctx context.Context, event chatEvent, active *a
 	}
 
 	if active != nil {
-		logx.Debugf("chat worker steering active turn %s", logx.KVSummary("chat_id", w.chatID, "thread_id", active.threadID, "turn_id", active.turnID))
+		logx.Debug("chat worker steering active turn", "chat_id", w.chatID, "thread_id", active.threadID, "turn_id", active.turnID)
 		if err := w.app.codex.SteerTurn(ctx, active.threadID, active.turnID, event.text); err != nil {
 			w.sendError(ctx, event.messageID, fmt.Errorf("steer codex turn: %w", err))
 		}
@@ -179,7 +179,7 @@ func (w *chatWorker) startTurn(ctx context.Context, messageID int64, text string
 		return nil, err
 	}
 
-	logx.Debugf("chat worker started turn %s", logx.KVSummary("chat_id", w.chatID, "thread_id", handle.ThreadID, "turn_id", handle.TurnID))
+	logx.Debug("chat worker started turn", "chat_id", w.chatID, "thread_id", handle.ThreadID, "turn_id", handle.TurnID)
 	return &activeChatTurn{
 		threadID:       handle.ThreadID,
 		turnID:         handle.TurnID,
@@ -194,7 +194,7 @@ func (w *chatWorker) startTypingLoop(ctx context.Context) func() {
 	typingCtx, cancel := context.WithCancel(ctx)
 	go func() {
 		if err := w.app.telegram.SendChatAction(typingCtx, w.chatID, "typing"); err != nil {
-			logx.Debugf("telegram typing failed %s", logx.KVSummary("chat_id", w.chatID, "error", err))
+			logx.Debug("telegram typing failed", "chat_id", w.chatID, "error", err)
 		}
 
 		ticker := time.NewTicker(4 * time.Second)
@@ -206,7 +206,7 @@ func (w *chatWorker) startTypingLoop(ctx context.Context) func() {
 				return
 			case <-ticker.C:
 				if err := w.app.telegram.SendChatAction(typingCtx, w.chatID, "typing"); err != nil {
-					logx.Debugf("telegram typing failed %s", logx.KVSummary("chat_id", w.chatID, "error", err))
+					logx.Debug("telegram typing failed", "chat_id", w.chatID, "error", err)
 				}
 			}
 		}
@@ -235,7 +235,7 @@ func (w *chatWorker) finishTurn(ctx context.Context, replyMessageID int64, resul
 	}
 
 	chunks := telegram.ChunkMessage(reply, w.app.cfg.TelegramMessageChunkSize)
-	logx.Debugf("chat worker replying %s", logx.KVSummary("chat_id", w.chatID, "chunks", len(chunks), "text", logx.SummarizeText(reply)))
+	logx.Debug("chat worker replying", "chat_id", w.chatID, "chunks", len(chunks), "text", logx.SummarizeText(reply))
 	for _, chunk := range chunks {
 		if err := w.app.telegram.SendMessage(ctx, w.chatID, chunk); err != nil {
 			return
@@ -251,9 +251,9 @@ func (w *chatWorker) handleTurnEvent(ctx context.Context, replyMessageID int64, 
 	if text == "" {
 		return
 	}
-	logx.Debugf("chat worker intermediate update %s", logx.KVSummary("chat_id", w.chatID, "text", logx.SummarizeText(text)))
+	logx.Debug("chat worker intermediate update", "chat_id", w.chatID, "text", logx.SummarizeText(text))
 	if err := w.app.telegram.SendMessage(ctx, w.chatID, text); err != nil {
-		logx.Debugf("chat worker intermediate update failed %s", logx.KVSummary("chat_id", w.chatID, "error", err))
+		logx.Debug("chat worker intermediate update failed", "chat_id", w.chatID, "error", err)
 	}
 }
 
@@ -273,7 +273,7 @@ func (w *chatWorker) drainTurnEvents(ctx context.Context, active *activeChatTurn
 }
 
 func (w *chatWorker) sendError(ctx context.Context, replyMessageID int64, err error) {
-	logx.Debugf("chat worker error %s", logx.KVSummary("chat_id", w.chatID, "error", err))
+	logx.Debug("chat worker error", "chat_id", w.chatID, "error", err)
 	_ = w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Codex relay error: %v", err))
 }
 
