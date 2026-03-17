@@ -16,6 +16,7 @@ import (
 type Service interface {
 	DeleteWebhook(ctx context.Context, dropPending bool) error
 	GetUpdates(ctx context.Context, offset *int64, timeoutSeconds int) ([]Update, error)
+	GetFile(ctx context.Context, fileID string) (string, error)
 	SendMessage(ctx context.Context, chatID int64, text string) error
 	SendChatAction(ctx context.Context, chatID int64, action string) error
 	SetMyCommands(ctx context.Context, commands []BotCommand) error
@@ -27,8 +28,9 @@ type BotCommand struct {
 }
 
 type Client struct {
-	baseURL string
-	client  *http.Client
+	baseURL     string
+	fileBaseURL string
+	client      *http.Client
 }
 
 type Update struct {
@@ -36,10 +38,18 @@ type Update struct {
 	Message  *Message `json:"message"`
 }
 
+type PhotoSize struct {
+	FileID string `json:"file_id"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+}
+
 type Message struct {
-	MessageID int64  `json:"message_id"`
-	Chat      Chat   `json:"chat"`
-	Text      string `json:"text"`
+	MessageID int64       `json:"message_id"`
+	Chat      Chat        `json:"chat"`
+	Text      string      `json:"text"`
+	Caption   string      `json:"caption"`
+	Photo     []PhotoSize `json:"photo"`
 }
 
 type Chat struct {
@@ -55,7 +65,8 @@ type telegramResponse[T any] struct {
 
 func NewClient(token string) *Client {
 	return &Client{
-		baseURL: fmt.Sprintf("https://api.telegram.org/bot%s", token),
+		baseURL:     fmt.Sprintf("https://api.telegram.org/bot%s", token),
+		fileBaseURL: fmt.Sprintf("https://api.telegram.org/file/bot%s", token),
 		client: &http.Client{
 			Timeout: 60 * time.Second,
 		},
@@ -69,6 +80,23 @@ func (c *Client) DeleteWebhook(ctx context.Context, dropPending bool) error {
 	}
 	var result any
 	return c.call(ctx, "deleteWebhook", payload, &result)
+}
+
+func (c *Client) GetFile(ctx context.Context, fileID string) (string, error) {
+	logx.Debug("telegram getFile", "file_id", fileID)
+	payload := map[string]any{
+		"file_id": fileID,
+	}
+	var result struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := c.call(ctx, "getFile", payload, &result); err != nil {
+		return "", err
+	}
+	if result.FilePath == "" {
+		return "", fmt.Errorf("getFile returned empty file_path for file_id %s", fileID)
+	}
+	return c.fileBaseURL + "/" + result.FilePath, nil
 }
 
 func (c *Client) GetUpdates(ctx context.Context, offset *int64, timeoutSeconds int) ([]Update, error) {

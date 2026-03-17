@@ -76,16 +76,36 @@ func (a *relayApp) handleUpdate(ctx context.Context, update telegram.Update) err
 		logx.Debug("telegram message ignored", "chat_id", message.Chat.ID, "reason", "chat_not_allowed")
 		return nil
 	}
-	if strings.TrimSpace(message.Text) == "" {
-		return a.telegram.SendMessage(ctx, message.Chat.ID, "Only plain text messages are supported right now.")
+
+	// Collect image URLs from any attached photos (take only the largest size).
+	var imageURLs []string
+	if len(message.Photo) > 0 {
+		largest := message.Photo[len(message.Photo)-1]
+		fileURL, err := a.telegram.GetFile(ctx, largest.FileID)
+		if err != nil {
+			logx.Warn("failed to get telegram file URL", "file_id", largest.FileID, "error", err)
+		} else {
+			imageURLs = append(imageURLs, fileURL)
+		}
+	}
+
+	// Use Caption as the text for photo messages (Telegram puts caption text there).
+	text := message.Text
+	if text == "" {
+		text = message.Caption
+	}
+
+	if strings.TrimSpace(text) == "" && len(imageURLs) == 0 {
+		return a.telegram.SendMessage(ctx, message.Chat.ID, "Only text and photo messages are supported right now.")
 	}
 
 	worker := a.workerForChat(ctx, message.Chat.ID)
-	logx.Debug("dispatching message to chat worker", "chat_id", message.Chat.ID, "command", len(message.Text) > 0 && message.Text[0] == '/')
+	logx.Debug("dispatching message to chat worker", "chat_id", message.Chat.ID, "command", len(text) > 0 && text[0] == '/')
 	event := chatEvent{
 		messageID: message.MessageID,
-		text:      message.Text,
-		isCommand: len(message.Text) > 0 && message.Text[0] == '/',
+		text:      text,
+		imageURLs: imageURLs,
+		isCommand: len(text) > 0 && text[0] == '/',
 	}
 	if worker.enqueue(event) {
 		return nil
@@ -205,13 +225,13 @@ func (w *chatWorker) handleEvent(ctx context.Context, event chatEvent, active *a
 
 	if active != nil {
 		logx.Debug("chat worker steering active turn", "chat_id", w.chatID, "thread_id", active.threadID, "turn_id", active.turnID)
-		if err := w.app.codex.SteerTurn(ctx, active.threadID, active.turnID, event.text); err != nil {
+		if err := w.app.codex.SteerTurn(ctx, active.threadID, active.turnID, event.text, event.imageURLs); err != nil {
 			w.sendError(ctx, event.messageID, fmt.Errorf("steer codex turn: %w", err))
 		}
 		return active, false
 	}
 
-	nextActive, err := w.startTurn(ctx, event.messageID, event.text)
+	nextActive, err := w.startTurn(ctx, event.messageID, event.text, event.imageURLs)
 	if err != nil {
 		w.sendError(ctx, event.messageID, err)
 		return nil, false
@@ -219,7 +239,7 @@ func (w *chatWorker) handleEvent(ctx context.Context, event chatEvent, active *a
 	return nextActive, false
 }
 
-func (w *chatWorker) startTurn(ctx context.Context, messageID int64, text string) (*activeChatTurn, error) {
+func (w *chatWorker) startTurn(ctx context.Context, messageID int64, text string, imageURLs []string) (*activeChatTurn, error) {
 	options := w.app.threadOptionsForChat(w.chatID)
 	threadID, err := w.app.codex.EnsureThread(ctx, w.app.threadIDForChat(w.chatID), options)
 	if err != nil {
@@ -229,7 +249,7 @@ func (w *chatWorker) startTurn(ctx context.Context, messageID int64, text string
 		return nil, err
 	}
 
-	handle, err := w.app.codex.StartTurn(ctx, threadID, text)
+	handle, err := w.app.codex.StartTurn(ctx, threadID, text, imageURLs)
 	if err != nil {
 		return nil, err
 	}
