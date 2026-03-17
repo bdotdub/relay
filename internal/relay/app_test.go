@@ -754,6 +754,34 @@ func TestHandleUpdateDoesNotBlockWhenWorkerQueueIsFull(t *testing.T) {
 	})
 }
 
+func TestSaveStateUsesPrivatePermissions(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.StatePath = filepath.Join(t.TempDir(), "state", "relay.json")
+
+	app := newRelayAppWithServices(cfg, &fakeTelegramService{}, newFakeCodexService())
+	app.threadIDsByChat["7"] = "thread-7"
+
+	if err := app.saveState(); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	stateInfo, err := os.Stat(cfg.StatePath)
+	if err != nil {
+		t.Fatalf("stat state file: %v", err)
+	}
+	if got := stateInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("expected state file mode 0600, got %o", got)
+	}
+
+	dirInfo, err := os.Stat(filepath.Dir(cfg.StatePath))
+	if err != nil {
+		t.Fatalf("stat state directory: %v", err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o700 {
+		t.Fatalf("expected state directory mode 0700, got %o", got)
+	}
+}
+
 type fakeTelegramService struct {
 	mu      sync.Mutex
 	sent    []sentTelegramMessage

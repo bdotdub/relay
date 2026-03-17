@@ -249,8 +249,12 @@ func (a *relayApp) loadState() error {
 }
 
 func (a *relayApp) saveState() error {
-	if err := os.MkdirAll(filepath.Dir(a.cfg.StatePath), 0o755); err != nil {
+	stateDir := filepath.Dir(a.cfg.StatePath)
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
+	}
+	if err := os.Chmod(stateDir, 0o700); err != nil {
+		return fmt.Errorf("chmod state directory: %w", err)
 	}
 
 	a.stateMu.RLock()
@@ -265,8 +269,34 @@ func (a *relayApp) saveState() error {
 		return fmt.Errorf("marshal relay state: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(a.cfg.StatePath, data, 0o644); err != nil {
-		return fmt.Errorf("write relay state: %w", err)
+	tempFile, err := os.CreateTemp(stateDir, filepath.Base(a.cfg.StatePath)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp state file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := tempFile.Chmod(0o600); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("chmod temp state file: %w", err)
+	}
+	if _, err := tempFile.Write(data); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("write temp state file: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("close temp state file: %w", err)
+	}
+	if err := os.Rename(tempPath, a.cfg.StatePath); err != nil {
+		return fmt.Errorf("replace state file: %w", err)
+	}
+	cleanup = false
+	if err := os.Chmod(a.cfg.StatePath, 0o600); err != nil {
+		return fmt.Errorf("chmod state file: %w", err)
 	}
 	return nil
 }
