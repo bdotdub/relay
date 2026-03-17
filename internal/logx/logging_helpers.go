@@ -1,15 +1,15 @@
 package logx
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+	"unicode/utf8"
+)
 
 func SummarizeText(text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return ""
 	}
-	const limit = 120
-	if len(text) <= limit {
-		return text
-	}
-	return text[:limit] + "...<truncated>"
+	return fmt.Sprintf("[redacted %d chars]", utf8.RuneCountInString(text))
 }

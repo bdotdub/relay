@@ -332,7 +332,7 @@ func (w *webSocketJSONRPCWriter) WriteJSON(ctx context.Context, payload any) err
 func logLines(reader io.Reader, prefix string) {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
-		logx.Debug("subprocess output", "stream", prefix, "line", scanner.Text())
+		logx.Debug("subprocess output", "stream", prefix, "line", logx.SummarizeText(scanner.Text()))
 	}
 }
 
