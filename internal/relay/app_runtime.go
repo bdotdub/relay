@@ -82,11 +82,16 @@ func (a *relayApp) handleUpdate(ctx context.Context, update telegram.Update) err
 
 	worker := a.workerForChat(ctx, message.Chat.ID)
 	logx.Debug("dispatching message to chat worker", "chat_id", message.Chat.ID, "command", len(message.Text) > 0 && message.Text[0] == '/')
-	worker.events <- chatEvent{
+	event := chatEvent{
 		messageID: message.MessageID,
 		text:      message.Text,
 		isCommand: len(message.Text) > 0 && message.Text[0] == '/',
 	}
+	if worker.enqueue(event) {
+		return nil
+	}
+	logx.Warn("chat worker queue full; dropping message", "chat_id", message.Chat.ID, "message_id", message.MessageID)
+	worker.notifyQueueOverflow()
 	return nil
 }
 
@@ -157,6 +162,36 @@ func (w *chatWorker) run(ctx context.Context) {
 			active = nextActive
 		}
 	}
+}
+
+func (w *chatWorker) enqueue(event chatEvent) bool {
+	select {
+	case w.events <- event:
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *chatWorker) notifyQueueOverflow() {
+	now := time.Now()
+
+	w.overflowMu.Lock()
+	if now.Before(w.nextOverflowNoticeAt) {
+		w.overflowMu.Unlock()
+		return
+	}
+	w.nextOverflowNoticeAt = now.Add(5 * time.Second)
+	w.overflowMu.Unlock()
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := w.app.telegram.SendMessage(ctx, w.chatID, "Too many pending messages for this chat. Wait for the current turn to finish, then try again."); err != nil {
+			logx.Warn("failed to send queue overflow notice", "chat_id", w.chatID, "error", err)
+		}
+	}()
 }
 
 func (w *chatWorker) handleEvent(ctx context.Context, event chatEvent, active *activeChatTurn) (*activeChatTurn, bool) {

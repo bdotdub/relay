@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/bdotdub/relay/internal/codex"
 	"github.com/bdotdub/relay/internal/config"
@@ -30,6 +31,9 @@ type chatWorker struct {
 	app    *relayApp
 	chatID int64
 	events chan chatEvent
+
+	overflowMu           sync.Mutex
+	nextOverflowNoticeAt time.Time
 }
 
 type chatEvent struct {

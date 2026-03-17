@@ -712,6 +712,48 @@ func TestDisallowedPrivateChatsAreIgnored(t *testing.T) {
 	}
 }
 
+func TestHandleUpdateDoesNotBlockWhenWorkerQueueIsFull(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+
+	worker := &chatWorker{
+		app:    app,
+		chatID: 7,
+		events: make(chan chatEvent, 1),
+	}
+	worker.events <- chatEvent{messageID: 1, text: "queued"}
+	app.workers[7] = worker
+
+	done := make(chan error, 1)
+	go func() {
+		done <- app.handleUpdate(ctx, telegramUpdate{
+			UpdateID: 1,
+			Message: &telegramMessage{
+				MessageID: 612,
+				Chat:      privateChat(7),
+				Text:      "overflow",
+			},
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("handle update returned error: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("handle update blocked on a full worker queue")
+	}
+
+	waitFor(t, "overflow notice", func() bool {
+		return telegram.messageCount() == 1
+	})
+}
+
 type fakeTelegramService struct {
 	mu      sync.Mutex
 	sent    []sentTelegramMessage
