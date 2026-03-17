@@ -25,7 +25,7 @@ Otherwise it launches Codex locally over stdio by default.
 
 ## Prerequisites
 
-- Go 1.25+
+- Go 1.25.8+
 - Telegram bot token from BotFather
 - Authenticated `codex` CLI (if running Codex locally)
 
