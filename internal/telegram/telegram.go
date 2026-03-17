@@ -297,10 +297,21 @@ func markdownV2(text string) string {
 		if index := strings.Index(text, "["); index >= 0 && index < next {
 			next = index
 		}
-		out.WriteString(formatMarkdownPlain(text[:next]))
+		segment := formatMarkdownPlain(text[:next])
+		if next < len(text) && strings.HasPrefix(text[next:], "`") && !strings.HasPrefix(text[next:], "```") {
+			segment = replaceTrailingSpaceWithNBSP(segment)
+		}
+		out.WriteString(segment)
 		text = text[next:]
 	}
 	return out.String()
+}
+
+func replaceTrailingSpaceWithNBSP(text string) string {
+	if !strings.HasSuffix(text, " ") {
+		return text
+	}
+	return text[:len(text)-1] + "\u00a0"
 }
 
 func consumeFencedCodeBlock(text string) (string, string, bool) {
