@@ -18,6 +18,12 @@ type Service interface {
 	GetUpdates(ctx context.Context, offset *int64, timeoutSeconds int) ([]Update, error)
 	SendMessage(ctx context.Context, chatID int64, text string) error
 	SendChatAction(ctx context.Context, chatID int64, action string) error
+	SetMyCommands(ctx context.Context, commands []BotCommand) error
+}
+
+type BotCommand struct {
+	Command     string `json:"command"`
+	Description string `json:"description"`
 }
 
 type Client struct {
@@ -37,7 +43,8 @@ type Message struct {
 }
 
 type Chat struct {
-	ID int64 `json:"id"`
+	ID   int64  `json:"id"`
+	Type string `json:"type"`
 }
 
 type telegramResponse[T any] struct {
@@ -106,6 +113,15 @@ func (c *Client) SendChatAction(ctx context.Context, chatID int64, action string
 	}
 	var result any
 	return c.call(ctx, "sendChatAction", payload, &result)
+}
+
+func (c *Client) SetMyCommands(ctx context.Context, commands []BotCommand) error {
+	logx.Debug("telegram setMyCommands", "count", len(commands))
+	payload := map[string]any{
+		"commands": commands,
+	}
+	var result any
+	return c.call(ctx, "setMyCommands", payload, &result)
 }
 
 func (c *Client) call(ctx context.Context, method string, payload any, out any) error {

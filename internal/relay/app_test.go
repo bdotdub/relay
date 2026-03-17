@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,6 +27,10 @@ type codexThreadOptions = codexpkg.ThreadOptions
 
 var stringsContains = strings.Contains
 
+func privateChat(id int64) telegramChat {
+	return telegramChat{ID: id, Type: "private"}
+}
+
 func TestSameChatSteersActiveTurn(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -38,7 +43,7 @@ func TestSameChatSteersActiveTurn(t *testing.T) {
 		UpdateID: 1,
 		Message: &telegramMessage{
 			MessageID: 101,
-			Chat:      telegramChat{ID: 7},
+			Chat:      privateChat(7),
 			Text:      "Write a summary",
 		},
 	}
@@ -46,7 +51,7 @@ func TestSameChatSteersActiveTurn(t *testing.T) {
 		UpdateID: 2,
 		Message: &telegramMessage{
 			MessageID: 102,
-			Chat:      telegramChat{ID: 7},
+			Chat:      privateChat(7),
 			Text:      "Include edge cases too",
 		},
 	}
@@ -90,7 +95,7 @@ func TestDifferentChatsStartDifferentTurns(t *testing.T) {
 			UpdateID: 1,
 			Message: &telegramMessage{
 				MessageID: 201,
-				Chat:      telegramChat{ID: 11},
+				Chat:      privateChat(11),
 				Text:      "Chat one",
 			},
 		},
@@ -98,7 +103,7 @@ func TestDifferentChatsStartDifferentTurns(t *testing.T) {
 			UpdateID: 2,
 			Message: &telegramMessage{
 				MessageID: 301,
-				Chat:      telegramChat{ID: 12},
+				Chat:      privateChat(12),
 				Text:      "Chat two",
 			},
 		},
@@ -129,7 +134,7 @@ func TestVerboseShowsIntermediateSections(t *testing.T) {
 		UpdateID: 1,
 		Message: &telegramMessage{
 			MessageID: 401,
-			Chat:      telegramChat{ID: 21},
+			Chat:      privateChat(21),
 			Text:      "/verbose on",
 		},
 	}); err != nil {
@@ -144,7 +149,7 @@ func TestVerboseShowsIntermediateSections(t *testing.T) {
 		UpdateID: 2,
 		Message: &telegramMessage{
 			MessageID: 402,
-			Chat:      telegramChat{ID: 21},
+			Chat:      privateChat(21),
 			Text:      "Do the thing",
 		},
 	}); err != nil {
@@ -193,7 +198,7 @@ func TestIntermediateUpdatesAreMutedWhenVerboseIsOff(t *testing.T) {
 		UpdateID: 1,
 		Message: &telegramMessage{
 			MessageID: 451,
-			Chat:      telegramChat{ID: 22},
+			Chat:      privateChat(22),
 			Text:      "Do the thing",
 		},
 	}); err != nil {
@@ -230,7 +235,7 @@ func TestStatusShowsLastTokenUsage(t *testing.T) {
 		UpdateID: 1,
 		Message: &telegramMessage{
 			MessageID: 501,
-			Chat:      telegramChat{ID: 31},
+			Chat:      privateChat(31),
 			Text:      "Count tokens",
 		},
 	}); err != nil {
@@ -254,7 +259,7 @@ func TestStatusShowsLastTokenUsage(t *testing.T) {
 		UpdateID: 2,
 		Message: &telegramMessage{
 			MessageID: 502,
-			Chat:      telegramChat{ID: 31},
+			Chat:      privateChat(31),
 			Text:      "/status",
 		},
 	}); err != nil {
@@ -289,7 +294,7 @@ func TestYoloCommandStartsFreshThreadAndUpdatesStatus(t *testing.T) {
 		UpdateID: 1,
 		Message: &telegramMessage{
 			MessageID: 551,
-			Chat:      telegramChat{ID: 32},
+			Chat:      privateChat(32),
 			Text:      "/yolo on",
 		},
 	}); err != nil {
@@ -314,7 +319,7 @@ func TestYoloCommandStartsFreshThreadAndUpdatesStatus(t *testing.T) {
 		UpdateID: 2,
 		Message: &telegramMessage{
 			MessageID: 552,
-			Chat:      telegramChat{ID: 32},
+			Chat:      privateChat(32),
 			Text:      "/status",
 		},
 	}); err != nil {
@@ -349,7 +354,7 @@ func TestModelCommandStartsFreshThreadAndUpdatesStatus(t *testing.T) {
 		UpdateID: 1,
 		Message: &telegramMessage{
 			MessageID: 556,
-			Chat:      telegramChat{ID: 34},
+			Chat:      privateChat(34),
 			Text:      "/model gpt-5",
 		},
 	}); err != nil {
@@ -374,7 +379,7 @@ func TestModelCommandStartsFreshThreadAndUpdatesStatus(t *testing.T) {
 		UpdateID: 2,
 		Message: &telegramMessage{
 			MessageID: 557,
-			Chat:      telegramChat{ID: 34},
+			Chat:      privateChat(34),
 			Text:      "/status",
 		},
 	}); err != nil {
@@ -407,7 +412,7 @@ func TestModelDefaultClearsOverride(t *testing.T) {
 			UpdateID: 1,
 			Message: &telegramMessage{
 				MessageID: 566,
-				Chat:      telegramChat{ID: 35},
+				Chat:      privateChat(35),
 				Text:      "/model gpt-5",
 			},
 		},
@@ -415,7 +420,7 @@ func TestModelDefaultClearsOverride(t *testing.T) {
 			UpdateID: 2,
 			Message: &telegramMessage{
 				MessageID: 567,
-				Chat:      telegramChat{ID: 35},
+				Chat:      privateChat(35),
 				Text:      "/model default",
 			},
 		},
@@ -441,6 +446,78 @@ func TestModelDefaultClearsOverride(t *testing.T) {
 	}
 }
 
+func TestReloadCommandAcknowledgesAndInvokesReloadHook(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+
+	reloadCalls := 0
+	app.reload = func() error {
+		reloadCalls++
+		return nil
+	}
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 1,
+		Message: &telegramMessage{
+			MessageID: 570,
+			Chat:      privateChat(36),
+			Text:      "/reload",
+		},
+	}); err != nil {
+		t.Fatalf("handle reload command: %v", err)
+	}
+
+	waitFor(t, "reload ack", func() bool {
+		return telegram.messageCount() == 1
+	})
+
+	if reloadCalls != 1 {
+		t.Fatalf("expected reload hook to be called once, got %d", reloadCalls)
+	}
+
+	reply := telegram.messages()[0].text
+	if !stringsContains(reply, "Reloading the relay process from the current binary.") {
+		t.Fatalf("unexpected reload ack: %q", reply)
+	}
+}
+
+func TestReloadCommandReportsReloadFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+
+	app.reload = func() error {
+		return errors.New("exec failed")
+	}
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 1,
+		Message: &telegramMessage{
+			MessageID: 571,
+			Chat:      privateChat(37),
+			Text:      "/reload",
+		},
+	}); err != nil {
+		t.Fatalf("handle reload command: %v", err)
+	}
+
+	waitFor(t, "reload failure replies", func() bool {
+		return telegram.messageCount() == 2
+	})
+
+	messages := telegram.messages()
+	if !stringsContains(messages[1].text, "Codex relay error: reload relay process: exec failed") {
+		t.Fatalf("unexpected reload failure reply: %q", messages[1].text)
+	}
+}
+
 func TestYoloModeChangesThreadOptionsForSubsequentTurns(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -453,7 +530,7 @@ func TestYoloModeChangesThreadOptionsForSubsequentTurns(t *testing.T) {
 		UpdateID: 1,
 		Message: &telegramMessage{
 			MessageID: 561,
-			Chat:      telegramChat{ID: 33},
+			Chat:      privateChat(33),
 			Text:      "/yolo on",
 		},
 	}); err != nil {
@@ -468,7 +545,7 @@ func TestYoloModeChangesThreadOptionsForSubsequentTurns(t *testing.T) {
 		UpdateID: 2,
 		Message: &telegramMessage{
 			MessageID: 562,
-			Chat:      telegramChat{ID: 33},
+			Chat:      privateChat(33),
 			Text:      "Ship it",
 		},
 	}); err != nil {
@@ -553,7 +630,7 @@ func TestActiveTurnSendsTypingAction(t *testing.T) {
 		UpdateID: 1,
 		Message: &telegramMessage{
 			MessageID: 601,
-			Chat:      telegramChat{ID: 41},
+			Chat:      privateChat(41),
 			Text:      "Generate something slow",
 		},
 	}); err != nil {
@@ -570,6 +647,38 @@ func TestActiveTurnSendsTypingAction(t *testing.T) {
 	}
 
 	codex.finishTurn("thread-1", turnResult{Text: "Done"})
+}
+
+func TestNonPrivateChatsAreIgnored(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 1,
+		Message: &telegramMessage{
+			MessageID: 610,
+			Chat:      telegramChat{ID: 99, Type: "group"},
+			Text:      "/yolo on",
+		},
+	}); err != nil {
+		t.Fatalf("handle group message: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	if telegram.messageCount() != 0 {
+		t.Fatalf("expected no telegram replies for non-private chats, got %d", telegram.messageCount())
+	}
+	if codex.startCount() != 0 {
+		t.Fatalf("expected no codex turn for non-private chats, got %d", codex.startCount())
+	}
+	if len(codex.newThreadCallsSnapshot()) != 0 {
+		t.Fatalf("expected no new thread for non-private chats, got %#v", codex.newThreadCallsSnapshot())
+	}
 }
 
 type fakeTelegramService struct {
@@ -613,6 +722,10 @@ func (f *fakeTelegramService) SendChatAction(ctx context.Context, chatID int64, 
 		chatID: chatID,
 		action: action,
 	})
+	return nil
+}
+
+func (f *fakeTelegramService) SetMyCommands(ctx context.Context, commands []telegrampkg.BotCommand) error {
 	return nil
 }
 

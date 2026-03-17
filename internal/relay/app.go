@@ -13,6 +13,7 @@ type relayApp struct {
 	cfg      config.Config
 	telegram telegram.Service
 	codex    codex.Service
+	reload   func() error
 
 	stateMu         sync.RWMutex
 	threadIDsByChat map[string]string
@@ -74,6 +75,7 @@ func newRelayAppWithServices(cfg config.Config, telegramSvc telegram.Service, co
 		cfg:             cfg,
 		telegram:        telegramSvc,
 		codex:           codexSvc,
+		reload:          reloadCurrentProcess,
 		threadIDsByChat: map[string]string{},
 		verboseByChat:   map[int64]bool{},
 		yoloByChat:      map[int64]bool{},

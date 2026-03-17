@@ -21,6 +21,9 @@ func (a *relayApp) run(ctx context.Context) error {
 	if err := a.telegram.DeleteWebhook(ctx, false); err != nil {
 		return err
 	}
+	if err := a.registerMyCommands(ctx); err != nil {
+		logx.Warn("failed to register Telegram slash commands", "error", err)
+	}
 
 	var offset *int64
 	for {
@@ -42,6 +45,19 @@ func (a *relayApp) run(ctx context.Context) error {
 	}
 }
 
+func (a *relayApp) registerMyCommands(ctx context.Context) error {
+	return a.telegram.SetMyCommands(ctx, []telegram.BotCommand{
+		{Command: "help", Description: "show supported commands"},
+		{Command: "status", Description: "show current thread and execution status"},
+		{Command: "new", Description: "start a new Codex thread"},
+		{Command: "reset", Description: "start a new Codex thread"},
+		{Command: "verbose", Description: "toggle visible intermediate output"},
+		{Command: "yolo", Description: "toggle YOLO execution mode"},
+		{Command: "model", Description: "set model override for this chat"},
+		{Command: "reload", Description: "reload the running relay process"},
+	})
+}
+
 func (a *relayApp) handleUpdate(ctx context.Context, update telegram.Update) error {
 	if update.Message == nil {
 		return nil
@@ -52,6 +68,10 @@ func (a *relayApp) handleUpdate(ctx context.Context, update telegram.Update) err
 		"message_id", message.MessageID,
 		"text", logx.SummarizeText(message.Text),
 	)
+	if message.Chat.Type != "private" {
+		logx.Debug("telegram message ignored", "chat_id", message.Chat.ID, "chat_type", message.Chat.Type, "reason", "chat_type_not_allowed")
+		return nil
+	}
 	if !a.isChatAllowed(message.Chat.ID) {
 		logx.Debug("telegram message ignored", "chat_id", message.Chat.ID, "reason", "chat_not_allowed")
 		return nil

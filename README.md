@@ -1,43 +1,35 @@
 # Telegram Codex Relay
 
-Go service that relays messages between a Telegram bot and the Codex app server.
+Relay messages between Telegram and a Codex app server.
 
-## What It Does
+## What this does
 
-- receives Telegram bot messages through long polling
-- sends each plain-text message to the Codex app server as a new turn
-- sends the Codex reply back to Telegram
-- keeps one Codex thread per Telegram chat
-- saves the chat-to-thread mapping in `.relay-state.json`
-- appends a Telegram-specific developer instruction so replies target Telegram MarkdownV2 rendering and avoid unnecessary local filesystem paths
+- Polls Telegram updates in private 1:1 chats.
+- For each plain-text message, sends it into an existing Codex thread for that chat.
+- Forwards Codex answers back to the same Telegram chat.
+- Keeps one conversation thread per chat and supports steering while a turn is active.
+- Stores chat → thread state in `.relay-state.json` by default.
+- Injects Telegram-specific developer instructions so replies use Telegram MarkdownV2 and avoid unnecessary filesystem paths.
+- Registers supported slash commands with Telegram via `setMyCommands` at startup.
 
-By default the relay starts `codex app-server` itself over `stdio`. It can also connect to an already-running app server over WebSocket.
+If `codex app-server` is already running, it can use that server over WebSocket.
+Otherwise it launches Codex locally over stdio by default.
 
-## Conversation Model
+## Conversation behavior
 
-The relay keeps context per Telegram chat.
+- First message in a chat: create a new Codex thread.
+- Subsequent messages in same chat: reuse the chat thread.
+- New message arrives mid-turn: treated as `turn/steer` (inline follow-up).
+- `/new` or `/reset`: clear saved thread mapping and start a fresh thread.
+- If a saved thread cannot be resumed, the relay automatically starts a new thread.
 
-- first message from a chat: create a new Codex thread
-- later messages from the same chat: reuse that same thread
-- if a second message arrives for the same chat while a turn is still running: send it as `turn/steer` into the active turn
-- `/new` or `/reset`: discard the saved mapping for that chat and start a fresh thread
-- if a saved thread cannot be resumed: fall back to a new thread automatically
-
-In practice this means the relay keeps a session going for each chat until you reset it, and quick follow-up messages can steer an in-flight answer instead of waiting for a brand new turn.
-
-## Requirements
+## Prerequisites
 
 - Go 1.25+
-- a Telegram bot token from BotFather
-- Codex CLI installed and authenticated
+- Telegram bot token from BotFather
+- Authenticated `codex` CLI (if running Codex locally)
 
-## Build
-
-```bash
-go build ./...
-```
-
-## Minimal Setup
+## Quick start
 
 ```bash
 export TELEGRAM_BOT_TOKEN="123456:abc..."
@@ -45,28 +37,28 @@ export TELEGRAM_ALLOWED_CHAT_IDS="123456789"
 go run .
 ```
 
-That starts the relay and, by default, also starts `codex app-server`.
+This starts the relay and launches a local `codex app-server` process by default.
 
 ## Configuration
 
-Core settings:
+Core relay settings:
 
-- `TELEGRAM_BOT_TOKEN`: required
-- `TELEGRAM_ALLOWED_CHAT_IDS`: optional comma-separated allowlist
-- `RELAY_LOG_LEVEL`: optional internal log level; defaults to `info`
-- `RELAY_VERBOSE`: deprecated compatibility toggle for `RELAY_LOG_LEVEL=debug`
-- `RELAY_STATE_PATH`: optional path for the chat/thread mapping file
-- `CODEX_CWD`: working directory for Codex threads
+- `TELEGRAM_BOT_TOKEN` (required): Telegram bot token
+- `TELEGRAM_ALLOWED_CHAT_IDS` (optional): comma-separated allowed chat IDs
+- `RELAY_LOG_LEVEL` (optional): default `info`
+- `RELAY_VERBOSE` (optional): deprecated compatibility for `RELAY_LOG_LEVEL=debug`
+- `RELAY_STATE_PATH` (optional): path to relay state file (default `.relay-state.json`)
+- `CODEX_CWD` (optional): working directory for Codex threads
 
 Codex process settings:
 
-- `CODEX_START_APP_SERVER`: defaults to `true`
-- `CODEX_APP_SERVER_COMMAND`: defaults to `codex app-server`
-- `CODEX_APP_SERVER_WS_URL`: required only when not starting the app server locally
+- `CODEX_START_APP_SERVER`: default `true`
+- `CODEX_APP_SERVER_COMMAND`: default `codex app-server`
+- `CODEX_APP_SERVER_WS_URL`: required when not starting the app server
 
 Optional Codex turn settings:
 
-- `CODEX_MODEL`: defaults to `gpt-5.3-codex-spark`
+- `CODEX_MODEL` (default `gpt-5.3-codex-spark`)
 - `CODEX_PERSONALITY`
 - `CODEX_SANDBOX`
 - `CODEX_APPROVAL_POLICY`
@@ -76,17 +68,17 @@ Optional Codex turn settings:
 - `CODEX_CONFIG_JSON`
 - `CODEX_EPHEMERAL_THREADS`
 
-Codex permission profile (optional; merged into thread config):
+Permission profile settings:
 
-- `CODEX_NETWORK_ENABLED`: set to `true` or `false` to allow or deny network access
-- `CODEX_FS_READ`: comma-separated absolute paths the agent may read
-- `CODEX_FS_WRITE`: comma-separated absolute paths the agent may write
+- `CODEX_NETWORK_ENABLED`: `true` or `false`
+- `CODEX_FS_READ`: comma-separated read paths
+- `CODEX_FS_WRITE`: comma-separated write paths
 
-All of these also have matching CLI flags. Run `go run . --help` for the full list.
+Run `go run . --help` to see all matching CLI flags.
 
-## Running
+## Running modes
 
-Default mode:
+Default:
 
 ```bash
 go run .
@@ -100,7 +92,7 @@ go run . \
   --codex-app-server-command "codex app-server"
 ```
 
-External app-server mode:
+Use an existing app server:
 
 ```bash
 go run . \
@@ -108,33 +100,32 @@ go run . \
   --codex-app-server-ws-url "ws://127.0.0.1:8765"
 ```
 
-## Telegram Commands
+## Telegram commands
+
+The following commands are registered automatically and available in Telegram’s command UI:
 
 - `/help`: show supported commands
-- `/status`: show the current transport, execution mode, model, thread id, working directory, and last token usage
-- `/new`: start a new Codex thread for this Telegram chat
+- `/status`: show transport, mode, model, thread id, working directory, token usage
+- `/new`: start a fresh thread for this chat
 - `/reset`: same as `/new`
-- `/verbose`: toggle visible intermediate output for this chat
-- `/verbose on|off|status`: explicit verbose control
-- `/yolo`: toggle YOLO execution mode for this chat and start a fresh thread
-- `/yolo on|off|status`: explicit YOLO control
-- `/model`: show the current model for this chat
-- `/model <name>`: set a per-chat model override and start a fresh thread
-- `/model default`: clear the per-chat override and use the configured default model
+- `/verbose` / `/verbose on|off|status`: toggle or inspect visible intermediate output
+- `/yolo` / `/yolo on|off|status`: toggle YOLO execution mode and start a fresh thread when changed
+- `/model`: show current chat model
+- `/model <name>`: set chat model override and start a fresh thread
+- `/model default`: clear model override and use default
+- `/reload`: replace the running relay process with the current binary; active turns are interrupted
 
-Any other plain-text message is forwarded to Codex.
+Any other plain-text message is forwarded directly to Codex.
 
-## Current Limitations
+## Known limitations
 
-- only plain-text Telegram messages are supported
-- Telegram update intake is global, but work is processed per chat
-- one active Codex turn per chat; extra messages during that turn are treated as steering input
-- verbose mode sends visible intermediate output as separate Telegram messages while the turn is running
-- YOLO mode runs that chat with `approval=never` and `sandbox=danger-full-access`
-- model selection is optimistic; `/model <name>` forwards that string to Codex and relies on the server to accept it
-- the bot shows Telegram `typing` activity while Codex is generating a reply
-- replies are sent after the Codex turn completes, not streamed incrementally to Telegram
-- thread state, per-chat YOLO mode, and per-chat model overrides are local file state, not a database
+- Only plain-text messages in private chats are supported
+- Global Telegram updates, per-chat workflow state
+- One active Codex turn per chat
+- Verbose output is delivered as separate Telegram messages while a turn is running
+- `/model <name>` depends on the configured Codex server accepting that model string
+- Replies are delivered when a turn completes (no streaming)
+- Thread, YOLO, and model state are local-file state, not shared across instances
 
 ## Verification
 
@@ -143,11 +134,13 @@ go test ./...
 go build ./...
 ```
 
-If your environment restricts the default Go cache paths, set local cache directories before running those commands:
+If default cache dirs are restricted:
 
 ```bash
-env GOCACHE=$PWD/.gocache GOTMPDIR=$PWD/.gotmp GOMODCACHE=$PWD/.gomodcache go test ./...
-env GOCACHE=$PWD/.gocache GOTMPDIR=$PWD/.gotmp GOMODCACHE=$PWD/.gomodcache go build ./...
+env GOCACHE=$PWD/.gocache GOTMPDIR=$PWD/.gotmp GOMODCACHE=$PWD/.gomodcache \
+go test ./...
+env GOCACHE=$PWD/.gocache GOTMPDIR=$PWD/.gotmp GOMODCACHE=$PWD/.gomodcache \
+go build ./...
 ```
 
 ## References

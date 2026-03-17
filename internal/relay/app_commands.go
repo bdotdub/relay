@@ -33,7 +33,15 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 		}
 		return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Transport: %s\nExecution: %s\nModel: %s\nThread: %s\nCWD: %s\nTokens: %s", mode, w.app.executionProfileSummary(w.chatID), w.app.modelSummaryForChat(w.chatID), threadID, w.app.cfg.CodexCWD, formatTokenUsage(w.app.lastUsageForChat(w.chatID))))
 	case "/help":
-		return w.app.telegram.SendMessage(ctx, w.chatID, "Send any text message to relay it to Codex.\n/new or /reset starts a fresh Codex thread.\n/status shows the current thread mapping, execution mode, model, and last token usage.\n/verbose toggles intermediate visible output for this chat.\n/yolo toggles YOLO execution mode for this chat and starts a fresh thread.\n/model sets a per-chat model override and starts a fresh thread.")
+		return w.app.telegram.SendMessage(ctx, w.chatID, "Send any text message to relay it to Codex.\n/new or /reset starts a fresh Codex thread.\n/status shows the current thread mapping, execution mode, model, and last token usage.\n/verbose toggles intermediate visible output for this chat.\n/yolo toggles YOLO execution mode for this chat and starts a fresh thread.\n/model sets a per-chat model override and starts a fresh thread.\n/reload replaces the running relay process with the current binary.")
+	case "/reload":
+		if err := w.app.telegram.SendMessage(ctx, w.chatID, "Reloading the relay process from the current binary. Active turns will be interrupted."); err != nil {
+			return err
+		}
+		if err := w.app.reload(); err != nil {
+			return fmt.Errorf("reload relay process: %w", err)
+		}
+		return nil
 	case "/verbose":
 		enabled, message := w.app.toggleVerboseForChat(w.chatID, text)
 		if message == "" {
