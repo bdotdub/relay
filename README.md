@@ -44,7 +44,7 @@ This starts the relay and launches a local `codex app-server` process by default
 Core relay settings:
 
 - `TELEGRAM_BOT_TOKEN` (required): Telegram bot token
-- `TELEGRAM_ALLOWED_CHAT_IDS` (optional): comma-separated allowed chat IDs
+- `TELEGRAM_ALLOWED_CHAT_IDS` (required): comma-separated allowed private chat IDs
 - `RELAY_LOG_LEVEL` (optional): default `info`
 - `RELAY_VERBOSE` (optional): deprecated compatibility for `RELAY_LOG_LEVEL=debug`
 - `RELAY_STATE_PATH` (optional): path to relay state file (default `.relay-state.json`)

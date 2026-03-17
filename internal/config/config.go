@@ -130,6 +130,9 @@ func parse(args []string, output io.Writer) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	if len(cfg.TelegramAllowedChatIDs) == 0 {
+		return Config{}, errors.New("--telegram-allowed-chat-ids or TELEGRAM_ALLOWED_CHAT_IDS is required")
+	}
 	cfg.CodexAppServerCommand, err = splitCommand(codexAppServerCommand)
 	if err != nil {
 		return Config{}, err

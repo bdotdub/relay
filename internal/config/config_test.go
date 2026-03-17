@@ -6,6 +6,7 @@ import (
 
 func TestParseConfigDefaultsLogLevelToInfo(t *testing.T) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	t.Setenv("TELEGRAM_ALLOWED_CHAT_IDS", "123")
 
 	cfg, err := parseConfigForTest(t)
 	if err != nil {
@@ -18,6 +19,7 @@ func TestParseConfigDefaultsLogLevelToInfo(t *testing.T) {
 
 func TestParseConfigVerboseFlagSetsDebugLogLevel(t *testing.T) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	t.Setenv("TELEGRAM_ALLOWED_CHAT_IDS", "123")
 
 	cfg, err := parseConfigForTest(t, "--verbose")
 	if err != nil {
@@ -30,6 +32,7 @@ func TestParseConfigVerboseFlagSetsDebugLogLevel(t *testing.T) {
 
 func TestParseConfigRelayVerboseEnvSetsDebugLogLevel(t *testing.T) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	t.Setenv("TELEGRAM_ALLOWED_CHAT_IDS", "123")
 	t.Setenv("RELAY_VERBOSE", "true")
 
 	cfg, err := parseConfigForTest(t)
@@ -43,6 +46,7 @@ func TestParseConfigRelayVerboseEnvSetsDebugLogLevel(t *testing.T) {
 
 func TestParseConfigRelayLogLevelOverridesRelayVerboseEnv(t *testing.T) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	t.Setenv("TELEGRAM_ALLOWED_CHAT_IDS", "123")
 	t.Setenv("RELAY_VERBOSE", "true")
 	t.Setenv("RELAY_LOG_LEVEL", "error")
 
@@ -57,6 +61,7 @@ func TestParseConfigRelayLogLevelOverridesRelayVerboseEnv(t *testing.T) {
 
 func TestParseConfigVerboseFlagOverridesExplicitLogLevel(t *testing.T) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	t.Setenv("TELEGRAM_ALLOWED_CHAT_IDS", "123")
 
 	cfg, err := parseConfigForTest(t, "--log-level=warn", "--verbose")
 	if err != nil {
@@ -69,9 +74,18 @@ func TestParseConfigVerboseFlagOverridesExplicitLogLevel(t *testing.T) {
 
 func TestParseConfigRejectsInvalidLogLevel(t *testing.T) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	t.Setenv("TELEGRAM_ALLOWED_CHAT_IDS", "123")
 
 	if _, err := parseConfigForTest(t, "--log-level=noisy"); err == nil {
 		t.Fatal("expected invalid log level error")
+	}
+}
+
+func TestParseConfigRequiresAllowedChatIDs(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+
+	if _, err := parseConfigForTest(t); err == nil {
+		t.Fatal("expected missing allowlist error")
 	}
 }
 

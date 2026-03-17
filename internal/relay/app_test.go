@@ -681,6 +681,37 @@ func TestNonPrivateChatsAreIgnored(t *testing.T) {
 	}
 }
 
+func TestDisallowedPrivateChatsAreIgnored(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	cfg := testConfig(t)
+	cfg.TelegramAllowedChatIDs = map[int64]struct{}{7: {}}
+	app := newRelayAppWithServices(cfg, telegram, codex)
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 1,
+		Message: &telegramMessage{
+			MessageID: 611,
+			Chat:      privateChat(99),
+			Text:      "Hello",
+		},
+	}); err != nil {
+		t.Fatalf("handle disallowed private message: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	if telegram.messageCount() != 0 {
+		t.Fatalf("expected no telegram replies for disallowed private chats, got %d", telegram.messageCount())
+	}
+	if codex.startCount() != 0 {
+		t.Fatalf("expected no codex turn for disallowed private chats, got %d", codex.startCount())
+	}
+}
+
 type fakeTelegramService struct {
 	mu      sync.Mutex
 	sent    []sentTelegramMessage
@@ -916,6 +947,21 @@ func testConfig(t *testing.T) configpkg.Config {
 	t.Helper()
 	return configpkg.Config{
 		TelegramBotToken:           "token",
+		TelegramAllowedChatIDs: map[int64]struct{}{
+			7:  {},
+			11: {},
+			12: {},
+			21: {},
+			22: {},
+			31: {},
+			32: {},
+			33: {},
+			34: {},
+			35: {},
+			36: {},
+			37: {},
+			41: {},
+		},
 		TelegramPollTimeoutSeconds: 30,
 		TelegramMessageChunkSize:   3900,
 		StatePath:                  filepath.Join(t.TempDir(), ".relay-state.json"),

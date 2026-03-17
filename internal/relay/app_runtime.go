@@ -298,8 +298,8 @@ func (w *chatWorker) sendError(ctx context.Context, replyMessageID int64, err er
 }
 
 func (a *relayApp) isChatAllowed(chatID int64) bool {
-	if a.cfg.TelegramAllowedChatIDs == nil {
-		return true
+	if len(a.cfg.TelegramAllowedChatIDs) == 0 {
+		return false
 	}
 	_, ok := a.cfg.TelegramAllowedChatIDs[chatID]
 	return ok
