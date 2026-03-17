@@ -18,7 +18,7 @@ Relay messages between Telegram and a Codex app server.
 - For each plain-text message, sends it into an existing Codex thread for that chat.
 - Forwards Codex answers back to the same Telegram chat.
 - Keeps one conversation thread per chat and supports steering while a turn is active.
-- Stores chat → thread state in `.relay-state.json` by default.
+- Stores chat → thread state plus per-chat verbose, YOLO, and model settings in `.relay-state.json` by default.
 - Injects Telegram-specific developer instructions so replies use Telegram MarkdownV2 and avoid unnecessary filesystem paths.
 - Registers supported slash commands with Telegram via `setMyCommands` at startup.
 

@@ -52,9 +52,10 @@ type activeChatTurn struct {
 }
 
 type relayState struct {
-	Threads     map[string]string `json:"threads,omitempty"`
-	YoloByChat  map[string]bool   `json:"yolo_by_chat,omitempty"`
-	ModelByChat map[string]string `json:"model_by_chat,omitempty"`
+	Threads       map[string]string `json:"threads,omitempty"`
+	VerboseByChat map[string]bool   `json:"verbose_by_chat,omitempty"`
+	YoloByChat    map[string]bool   `json:"yolo_by_chat,omitempty"`
+	ModelByChat   map[string]string `json:"model_by_chat,omitempty"`
 }
 
 func Run(ctx context.Context, cfg config.Config) error {

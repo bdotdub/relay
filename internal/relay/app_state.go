@@ -55,26 +55,49 @@ func (a *relayApp) toggleVerboseForChat(chatID int64, text string) (bool, string
 	}
 
 	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-
+	current := a.verboseByChat[chatID]
+	next := current
 	switch arg {
 	case "", "toggle":
-		a.verboseByChat[chatID] = !a.verboseByChat[chatID]
+		next = !current
 	case "on":
-		a.verboseByChat[chatID] = true
+		next = true
 	case "off":
-		a.verboseByChat[chatID] = false
+		next = false
 	case "status":
-		if a.verboseByChat[chatID] {
+		a.stateMu.Unlock()
+		if current {
 			return true, "Verbose mode is enabled for this chat."
 		}
 		return false, "Verbose mode is disabled for this chat."
 	default:
-		return a.verboseByChat[chatID], "Usage: /verbose, /verbose on, /verbose off, or /verbose status"
+		a.stateMu.Unlock()
+		return current, "Usage: /verbose, /verbose on, /verbose off, or /verbose status"
 	}
-	logx.Debug("chat verbose mode changed", "chat_id", chatID, "enabled", a.verboseByChat[chatID])
 
-	if a.verboseByChat[chatID] {
+	if next == current {
+		a.stateMu.Unlock()
+		if current {
+			return true, ""
+		}
+		return false, ""
+	}
+	a.verboseByChat[chatID] = next
+	a.stateMu.Unlock()
+
+	logx.Debug("chat verbose mode changed", "chat_id", chatID, "enabled", next)
+	if err := a.saveState(); err != nil {
+		a.stateMu.Lock()
+		if current {
+			a.verboseByChat[chatID] = true
+		} else {
+			delete(a.verboseByChat, chatID)
+		}
+		a.stateMu.Unlock()
+		return current, fmt.Sprintf("Failed to update verbose mode: %v", err)
+	}
+
+	if next {
 		return true, ""
 	}
 	return false, ""
@@ -200,6 +223,7 @@ func (a *relayApp) loadState() error {
 		if errors.Is(err, os.ErrNotExist) {
 			a.stateMu.Lock()
 			a.threadIDsByChat = map[string]string{}
+			a.verboseByChat = map[int64]bool{}
 			a.yoloByChat = map[int64]bool{}
 			a.modelByChat = map[int64]string{}
 			a.stateMu.Unlock()
@@ -209,11 +233,12 @@ func (a *relayApp) loadState() error {
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err == nil {
-		if _, hasThreads := raw["threads"]; hasThreads || raw["yolo_by_chat"] != nil || raw["model_by_chat"] != nil {
+		if _, hasThreads := raw["threads"]; hasThreads || raw["verbose_by_chat"] != nil || raw["yolo_by_chat"] != nil || raw["model_by_chat"] != nil {
 			var state relayState
 			if err := json.Unmarshal(data, &state); err != nil {
 				a.stateMu.Lock()
 				a.threadIDsByChat = map[string]string{}
+				a.verboseByChat = map[int64]bool{}
 				a.yoloByChat = map[int64]bool{}
 				a.modelByChat = map[int64]string{}
 				a.stateMu.Unlock()
@@ -224,6 +249,7 @@ func (a *relayApp) loadState() error {
 			if a.threadIDsByChat == nil {
 				a.threadIDsByChat = map[string]string{}
 			}
+			a.verboseByChat = decodeBoolMap(state.VerboseByChat)
 			a.yoloByChat = decodeBoolMap(state.YoloByChat)
 			a.modelByChat = decodeStringMap(state.ModelByChat)
 			a.stateMu.Unlock()
@@ -235,6 +261,7 @@ func (a *relayApp) loadState() error {
 	if err := json.Unmarshal(data, &mapping); err != nil {
 		a.stateMu.Lock()
 		a.threadIDsByChat = map[string]string{}
+		a.verboseByChat = map[int64]bool{}
 		a.yoloByChat = map[int64]bool{}
 		a.modelByChat = map[int64]string{}
 		a.stateMu.Unlock()
@@ -242,6 +269,7 @@ func (a *relayApp) loadState() error {
 	}
 	a.stateMu.Lock()
 	a.threadIDsByChat = mapping
+	a.verboseByChat = map[int64]bool{}
 	a.yoloByChat = map[int64]bool{}
 	a.modelByChat = map[int64]string{}
 	a.stateMu.Unlock()
@@ -259,9 +287,10 @@ func (a *relayApp) saveState() error {
 
 	a.stateMu.RLock()
 	state := relayState{
-		Threads:     a.threadIDsByChat,
-		YoloByChat:  encodeBoolMap(a.yoloByChat),
-		ModelByChat: encodeStringMap(a.modelByChat),
+		Threads:       a.threadIDsByChat,
+		VerboseByChat: encodeBoolMap(a.verboseByChat),
+		YoloByChat:    encodeBoolMap(a.yoloByChat),
+		ModelByChat:   encodeStringMap(a.modelByChat),
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	a.stateMu.RUnlock()

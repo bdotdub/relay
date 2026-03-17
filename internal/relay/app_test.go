@@ -588,7 +588,7 @@ func TestLoadStateSupportsLegacyAndNewFormats(t *testing.T) {
 	}
 
 	newApp := newRelayAppWithServices(cfg, &fakeTelegramService{}, newFakeCodexService())
-	newData := []byte("{\n  \"threads\": {\n    \"9\": \"thread-9\"\n  },\n  \"yolo_by_chat\": {\n    \"9\": true\n  }\n}\n")
+	newData := []byte("{\n  \"threads\": {\n    \"9\": \"thread-9\"\n  },\n  \"verbose_by_chat\": {\n    \"9\": true\n  },\n  \"yolo_by_chat\": {\n    \"9\": true\n  }\n}\n")
 	if err := os.WriteFile(cfg.StatePath, newData, 0o644); err != nil {
 		t.Fatalf("write new state: %v", err)
 	}
@@ -597,6 +597,9 @@ func TestLoadStateSupportsLegacyAndNewFormats(t *testing.T) {
 	}
 	if got := newApp.threadIDForChat(9); got != "thread-9" {
 		t.Fatalf("unexpected new-format thread id: %q", got)
+	}
+	if !newApp.verboseForChat(9) {
+		t.Fatal("new state should enable verbose")
 	}
 	if !newApp.yoloForChat(9) {
 		t.Fatal("new state should enable yolo")
@@ -615,6 +618,28 @@ func TestLoadStateSupportsLegacyAndNewFormats(t *testing.T) {
 	}
 	if got := modelApp.modelOverrideForChat(10); got != "gpt-5" {
 		t.Fatalf("unexpected model override: %q", got)
+	}
+}
+
+func TestVerboseModePersistsAcrossReload(t *testing.T) {
+	cfg := testConfig(t)
+	app := newRelayAppWithServices(cfg, &fakeTelegramService{}, newFakeCodexService())
+
+	enabled, message := app.toggleVerboseForChat(42, "/verbose on")
+	if !enabled {
+		t.Fatal("expected verbose mode to be enabled")
+	}
+	if message != "" {
+		t.Fatalf("unexpected verbose message: %q", message)
+	}
+
+	reloaded := newRelayAppWithServices(cfg, &fakeTelegramService{}, newFakeCodexService())
+	if err := reloaded.loadState(); err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	if !reloaded.verboseForChat(42) {
+		t.Fatal("expected verbose mode to persist across reload")
 	}
 }
 
@@ -1016,7 +1041,7 @@ func (f *fakeCodexService) startCallsSnapshot() []fakeStartCall {
 func testConfig(t *testing.T) configpkg.Config {
 	t.Helper()
 	return configpkg.Config{
-		TelegramBotToken:           "token",
+		TelegramBotToken: "token",
 		TelegramAllowedChatIDs: map[int64]struct{}{
 			7:  {},
 			11: {},
