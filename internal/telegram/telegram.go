@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -16,6 +18,10 @@ import (
 type Service interface {
 	DeleteWebhook(ctx context.Context, dropPending bool) error
 	GetUpdates(ctx context.Context, offset *int64, timeoutSeconds int) ([]Update, error)
+	// DownloadFile fetches the image bytes for a Telegram file ID. It also
+	// returns the file extension (e.g. ".jpg") derived from Telegram's file path,
+	// which callers can use when writing the data to a local file.
+	DownloadFile(ctx context.Context, fileID string) (data []byte, ext string, err error)
 	SendMessage(ctx context.Context, chatID int64, text string) error
 	SendChatAction(ctx context.Context, chatID int64, action string) error
 	SetMyCommands(ctx context.Context, commands []BotCommand) error
@@ -27,8 +33,9 @@ type BotCommand struct {
 }
 
 type Client struct {
-	baseURL string
-	client  *http.Client
+	baseURL     string
+	fileBaseURL string
+	client      *http.Client
 }
 
 type Update struct {
@@ -36,10 +43,18 @@ type Update struct {
 	Message  *Message `json:"message"`
 }
 
+type PhotoSize struct {
+	FileID string `json:"file_id"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+}
+
 type Message struct {
-	MessageID int64  `json:"message_id"`
-	Chat      Chat   `json:"chat"`
-	Text      string `json:"text"`
+	MessageID int64       `json:"message_id"`
+	Chat      Chat        `json:"chat"`
+	Text      string      `json:"text"`
+	Caption   string      `json:"caption"`
+	Photo     []PhotoSize `json:"photo"`
 }
 
 type Chat struct {
@@ -55,7 +70,8 @@ type telegramResponse[T any] struct {
 
 func NewClient(token string) *Client {
 	return &Client{
-		baseURL: fmt.Sprintf("https://api.telegram.org/bot%s", token),
+		baseURL:     fmt.Sprintf("https://api.telegram.org/bot%s", token),
+		fileBaseURL: fmt.Sprintf("https://api.telegram.org/file/bot%s", token),
 		client: &http.Client{
 			Timeout: 60 * time.Second,
 		},
@@ -69,6 +85,43 @@ func (c *Client) DeleteWebhook(ctx context.Context, dropPending bool) error {
 	}
 	var result any
 	return c.call(ctx, "deleteWebhook", payload, &result)
+}
+
+// DownloadFile fetches the bytes for a Telegram file ID. The returned ext is
+// the file extension (e.g. ".jpg") from Telegram's file path; callers should
+// use it when writing the data to disk. The bot-token-bearing download URL is
+// used internally and is never returned to callers.
+func (c *Client) DownloadFile(ctx context.Context, fileID string) ([]byte, string, error) {
+	logx.Debug("telegram getFile", "file_id", fileID)
+	var result struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := c.call(ctx, "getFile", map[string]any{"file_id": fileID}, &result); err != nil {
+		return nil, "", err
+	}
+	if result.FilePath == "" {
+		return nil, "", fmt.Errorf("getFile returned empty file_path for file_id %s", fileID)
+	}
+	ext := filepath.Ext(result.FilePath) // e.g. ".jpg"
+	downloadURL := c.fileBaseURL + "/" + result.FilePath
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("create download request for file_id %s: %w", fileID, err)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("download telegram file %s: %w", fileID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("download telegram file %s returned HTTP %s", fileID, resp.Status)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("read telegram file %s: %w", fileID, err)
+	}
+	logx.Debug("telegram file downloaded", "file_id", fileID, "bytes", len(data), "ext", ext)
+	return data, ext, nil
 }
 
 func (c *Client) GetUpdates(ctx context.Context, offset *int64, timeoutSeconds int) ([]Update, error) {

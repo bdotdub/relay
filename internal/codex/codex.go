@@ -17,8 +17,8 @@ type Service interface {
 	Close() error
 	NewThread(ctx context.Context, options ThreadOptions) (string, error)
 	EnsureThread(ctx context.Context, threadID string, options ThreadOptions) (string, error)
-	StartTurn(ctx context.Context, threadID string, userText string) (*TurnHandle, error)
-	SteerTurn(ctx context.Context, threadID string, turnID string, userText string) error
+	StartTurn(ctx context.Context, threadID string, userText string, imagePaths []string) (*TurnHandle, error)
+	SteerTurn(ctx context.Context, threadID string, turnID string, userText string, imagePaths []string) error
 }
 
 type ThreadOptions struct {
@@ -92,7 +92,8 @@ type turnIDResponse struct {
 
 type turnInput struct {
 	Type string `json:"type"`
-	Text string `json:"text"`
+	Text string `json:"text,omitempty"`
+	Path string `json:"path,omitempty"`
 }
 
 type turnStartParams struct {
@@ -253,7 +254,7 @@ func (c *Client) EnsureThread(ctx context.Context, threadID string, options Thre
 	return c.NewThread(ctx, options)
 }
 
-func (c *Client) StartTurn(ctx context.Context, threadID string, userText string) (*TurnHandle, error) {
+func (c *Client) StartTurn(ctx context.Context, threadID string, userText string, imagePaths []string) (*TurnHandle, error) {
 	subscription := &turnSubscription{
 		threadID:      threadID,
 		notifications: make(chan jsonrpc.Notification, 128),
@@ -272,7 +273,7 @@ func (c *Client) StartTurn(ctx context.Context, threadID string, userText string
 
 	params := turnStartParams{
 		ThreadID: threadID,
-		Input:    []turnInput{{Type: "text", Text: userText}},
+		Input:    buildTurnInputs(userText, imagePaths),
 	}
 	var response turnIDResponse
 	if err := c.rpc.Request(ctx, "turn/start", params, &response); err != nil {
@@ -297,13 +298,27 @@ func (c *Client) StartTurn(ctx context.Context, threadID string, userText string
 	}, nil
 }
 
-func (c *Client) SteerTurn(ctx context.Context, threadID string, turnID string, userText string) error {
+func (c *Client) SteerTurn(ctx context.Context, threadID string, turnID string, userText string, imagePaths []string) error {
 	logx.Debug("codex turn steer", "thread_id", threadID, "turn_id", turnID, "text", logx.SummarizeText(userText))
 	return c.rpc.Request(ctx, "turn/steer", turnSteerParams{
 		ThreadID:       threadID,
 		ExpectedTurnID: turnID,
-		Input:          []turnInput{{Type: "text", Text: userText}},
+		Input:          buildTurnInputs(userText, imagePaths),
 	}, nil)
+}
+
+// buildTurnInputs constructs the ordered slice of turn inputs from local image paths and text.
+// Images are placed before text so the model receives visual context first.
+// The upstream caller validates that at least one of userText or imagePaths is non-empty.
+func buildTurnInputs(userText string, imagePaths []string) []turnInput {
+	var inputs []turnInput
+	for _, path := range imagePaths {
+		inputs = append(inputs, turnInput{Type: "localImage", Path: path})
+	}
+	if userText != "" {
+		inputs = append(inputs, turnInput{Type: "text", Text: userText})
+	}
+	return inputs
 }
 
 func (c *Client) dispatchNotifications(ctx context.Context) {

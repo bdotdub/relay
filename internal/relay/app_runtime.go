@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -76,19 +77,60 @@ func (a *relayApp) handleUpdate(ctx context.Context, update telegram.Update) err
 		logx.Debug("telegram message ignored", "chat_id", message.Chat.ID, "reason", "chat_not_allowed")
 		return nil
 	}
-	if strings.TrimSpace(message.Text) == "" {
-		return a.telegram.SendMessage(ctx, message.Chat.ID, "Only plain text messages are supported right now.")
+
+	// Download image bytes for any attached photo (largest size) and write to a
+	// temp file. The bot-token-bearing URL is used internally only; Codex receives
+	// only the local file path via the "localImage" input type.
+	var imagePaths []string
+	if len(message.Photo) > 0 {
+		largest := message.Photo[len(message.Photo)-1]
+		data, ext, err := a.telegram.DownloadFile(ctx, largest.FileID)
+		if err != nil {
+			logx.Warn("failed to download telegram photo", "file_id", largest.FileID, "error", err)
+			return a.telegram.SendMessage(ctx, message.Chat.ID, "Couldn't download the photo from Telegram. Please try again.")
+		}
+		tmpFile, err := os.CreateTemp("", "relay-photo-*"+ext)
+		if err != nil {
+			return fmt.Errorf("create temp file for photo: %w", err)
+		}
+		tmpPath := tmpFile.Name()
+		if _, err := tmpFile.Write(data); err != nil {
+			tmpFile.Close()
+			if removeErr := os.Remove(tmpPath); removeErr != nil {
+				logx.Warn("failed to remove temp photo file", "path", tmpPath, "error", removeErr)
+			}
+			return fmt.Errorf("write temp photo file: %w", err)
+		}
+		tmpFile.Close()
+		imagePaths = append(imagePaths, tmpPath)
+	}
+
+	// Use Caption as the text for photo messages (Telegram stores caption text there).
+	text := message.Text
+	if text == "" {
+		text = message.Caption
+	}
+
+	if strings.TrimSpace(text) == "" && len(imagePaths) == 0 {
+		return a.telegram.SendMessage(ctx, message.Chat.ID, "Only text and photo messages are supported right now.")
 	}
 
 	worker := a.workerForChat(ctx, message.Chat.ID)
-	logx.Debug("dispatching message to chat worker", "chat_id", message.Chat.ID, "command", len(message.Text) > 0 && message.Text[0] == '/')
+	logx.Debug("dispatching message to chat worker", "chat_id", message.Chat.ID, "command", len(text) > 0 && text[0] == '/')
 	event := chatEvent{
-		messageID: message.MessageID,
-		text:      message.Text,
-		isCommand: len(message.Text) > 0 && message.Text[0] == '/',
+		messageID:  message.MessageID,
+		text:       text,
+		imagePaths: imagePaths,
+		isCommand:  len(text) > 0 && text[0] == '/',
 	}
 	if worker.enqueue(event) {
 		return nil
+	}
+	// Queue is full — clean up any temp files we created before dropping the event.
+	for _, p := range imagePaths {
+		if err := os.Remove(p); err != nil {
+			logx.Warn("failed to remove temp photo file", "path", p, "error", err)
+		}
 	}
 	logx.Warn("chat worker queue full; dropping message", "chat_id", message.Chat.ID, "message_id", message.MessageID)
 	worker.notifyQueueOverflow()
@@ -153,6 +195,11 @@ func (w *chatWorker) run(ctx context.Context) {
 				w.drainTurnEvents(ctx, active)
 				w.finishTurn(ctx, active.replyMessageID, result)
 			}
+			for _, p := range active.tmpFiles {
+				if err := os.Remove(p); err != nil {
+					logx.Warn("failed to remove temp photo file", "path", p, "error", err)
+				}
+			}
 			active = nil
 		case event := <-w.events:
 			nextActive, stop := w.handleEvent(ctx, event, active)
@@ -205,13 +252,15 @@ func (w *chatWorker) handleEvent(ctx context.Context, event chatEvent, active *a
 
 	if active != nil {
 		logx.Debug("chat worker steering active turn", "chat_id", w.chatID, "thread_id", active.threadID, "turn_id", active.turnID)
-		if err := w.app.codex.SteerTurn(ctx, active.threadID, active.turnID, event.text); err != nil {
+		if err := w.app.codex.SteerTurn(ctx, active.threadID, active.turnID, event.text, event.imagePaths); err != nil {
 			w.sendError(ctx, event.messageID, fmt.Errorf("steer codex turn: %w", err))
+		} else {
+			active.tmpFiles = append(active.tmpFiles, event.imagePaths...)
 		}
 		return active, false
 	}
 
-	nextActive, err := w.startTurn(ctx, event.messageID, event.text)
+	nextActive, err := w.startTurn(ctx, event.messageID, event.text, event.imagePaths)
 	if err != nil {
 		w.sendError(ctx, event.messageID, err)
 		return nil, false
@@ -219,7 +268,7 @@ func (w *chatWorker) handleEvent(ctx context.Context, event chatEvent, active *a
 	return nextActive, false
 }
 
-func (w *chatWorker) startTurn(ctx context.Context, messageID int64, text string) (*activeChatTurn, error) {
+func (w *chatWorker) startTurn(ctx context.Context, messageID int64, text string, imagePaths []string) (*activeChatTurn, error) {
 	options := w.app.threadOptionsForChat(w.chatID)
 	threadID, err := w.app.codex.EnsureThread(ctx, w.app.threadIDForChat(w.chatID), options)
 	if err != nil {
@@ -229,7 +278,7 @@ func (w *chatWorker) startTurn(ctx context.Context, messageID int64, text string
 		return nil, err
 	}
 
-	handle, err := w.app.codex.StartTurn(ctx, threadID, text)
+	handle, err := w.app.codex.StartTurn(ctx, threadID, text, imagePaths)
 	if err != nil {
 		return nil, err
 	}
@@ -242,6 +291,7 @@ func (w *chatWorker) startTurn(ctx context.Context, messageID int64, text string
 		eventCh:        handle.EventCh,
 		resultCh:       handle.ResultCh,
 		stopTyping:     w.startTypingLoop(ctx),
+		tmpFiles:       imagePaths,
 	}, nil
 }
 
