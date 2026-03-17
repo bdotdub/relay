@@ -2,6 +2,16 @@
 
 Relay messages between Telegram and a Codex app server.
 
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/f517b20a-6807-47b1-9ded-3a1d8435a314" />
+
+## Quick Start
+
+- Create a [Telegram bot](https://core.telegram.org/bots/tutorial)
+- Download (or build) the `relay` binary: https://github.com/bdotdub/relay/actions/workflows/build-binaries.yml
+- In a repo, run: relay --telegram-bot-token <TOKEN>
+
+---
+
 ## What this does
 
 - Polls Telegram updates in private 1:1 chats.
@@ -23,21 +33,28 @@ Otherwise it launches Codex locally over stdio by default.
 - `/new` or `/reset`: clear saved thread mapping and start a fresh thread.
 - If a saved thread cannot be resumed, the relay automatically starts a new thread.
 
+## Telegram commands
+
+The following commands are registered automatically and available in Telegram’s command UI:
+
+- `/help`: show supported commands
+- `/status`: show transport, mode, model, thread id, working directory, token usage
+- `/new`: start a fresh thread for this chat
+- `/reset`: same as `/new`
+- `/verbose` / `/verbose on|off|status`: toggle or inspect visible intermediate output
+- `/yolo` / `/yolo on|off|status`: toggle YOLO execution mode and start a fresh thread when changed
+- `/model`: show current chat model
+- `/model <name>`: set chat model override and start a fresh thread
+- `/model default`: clear model override and use default
+- `/reload`: replace the running relay process with the current binary; active turns are interrupted
+
+Any other plain-text message is forwarded directly to Codex.
+
 ## Prerequisites
 
 - Go 1.25.8+
 - Telegram bot token from BotFather
 - Authenticated `codex` CLI (if running Codex locally)
-
-## Quick start
-
-```bash
-export TELEGRAM_BOT_TOKEN="123456:abc..."
-export TELEGRAM_ALLOWED_CHAT_IDS="123456789"
-go run .
-```
-
-This starts the relay and launches a local `codex app-server` process by default.
 
 ## Configuration
 
@@ -99,23 +116,6 @@ go run . \
   --no-start-app-server \
   --codex-app-server-ws-url "ws://127.0.0.1:8765"
 ```
-
-## Telegram commands
-
-The following commands are registered automatically and available in Telegram’s command UI:
-
-- `/help`: show supported commands
-- `/status`: show transport, mode, model, thread id, working directory, token usage
-- `/new`: start a fresh thread for this chat
-- `/reset`: same as `/new`
-- `/verbose` / `/verbose on|off|status`: toggle or inspect visible intermediate output
-- `/yolo` / `/yolo on|off|status`: toggle YOLO execution mode and start a fresh thread when changed
-- `/model`: show current chat model
-- `/model <name>`: set chat model override and start a fresh thread
-- `/model default`: clear model override and use default
-- `/reload`: replace the running relay process with the current binary; active turns are interrupted
-
-Any other plain-text message is forwarded directly to Codex.
 
 ## Known limitations
 
