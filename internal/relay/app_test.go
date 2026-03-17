@@ -815,11 +815,12 @@ func TestPhotoMessagePassedToCodex(t *testing.T) {
 	if call.text != "What do you see?" {
 		t.Fatalf("expected caption as text, got %q", call.text)
 	}
-	if len(call.imageURLs) != 1 {
-		t.Fatalf("expected 1 image URL, got %d", len(call.imageURLs))
+	if len(call.imagePaths) != 1 {
+		t.Fatalf("expected 1 image path, got %d", len(call.imagePaths))
 	}
-	if !stringsContains(call.imageURLs[0], "large-id") {
-		t.Fatalf("expected largest photo file ID in URL, got %q", call.imageURLs[0])
+	// The path should be a non-empty string (a temp file path).
+	if call.imagePaths[0] == "" {
+		t.Fatal("expected non-empty image path")
 	}
 
 	codex.finishTurn(call.threadID, turnResult{Text: "I see a photo"})
@@ -862,8 +863,11 @@ func TestPhotoOnlyMessageWithoutCaptionPassedToCodex(t *testing.T) {
 	if call.text != "" {
 		t.Fatalf("expected empty text for photo-only message, got %q", call.text)
 	}
-	if len(call.imageURLs) != 1 {
-		t.Fatalf("expected 1 image URL, got %d", len(call.imageURLs))
+	if len(call.imagePaths) != 1 {
+		t.Fatalf("expected 1 image path, got %d", len(call.imagePaths))
+	}
+	if call.imagePaths[0] == "" {
+		t.Fatal("expected non-empty image path")
 	}
 	codex.finishTurn(call.threadID, turnResult{Text: "Image received"})
 }
@@ -920,8 +924,8 @@ func (f *fakeTelegramService) GetUpdates(ctx context.Context, offset *int64, tim
 	return nil, nil
 }
 
-func (f *fakeTelegramService) GetFile(ctx context.Context, fileID string) (string, error) {
-	return "https://api.telegram.org/file/bot-token/" + fileID, nil
+func (f *fakeTelegramService) DownloadFile(ctx context.Context, fileID string) ([]byte, string, error) {
+	return []byte("fake-image-bytes-for-" + fileID), ".jpg", nil
 }
 
 func (f *fakeTelegramService) SendMessage(ctx context.Context, chatID int64, text string) error {
@@ -988,9 +992,9 @@ type fakeCodexService struct {
 }
 
 type fakeStartCall struct {
-	threadID  string
-	text      string
-	imageURLs []string
+	threadID   string
+	text       string
+	imagePaths []string
 }
 
 type fakeThreadCall struct {
@@ -999,10 +1003,10 @@ type fakeThreadCall struct {
 }
 
 type fakeSteerCall struct {
-	threadID  string
-	turnID    string
-	text      string
-	imageURLs []string
+	threadID   string
+	turnID     string
+	text       string
+	imagePaths []string
 }
 
 func newFakeCodexService() *fakeCodexService {
@@ -1049,7 +1053,7 @@ func (f *fakeCodexService) EnsureThread(ctx context.Context, threadID string, op
 	return threadID, nil
 }
 
-func (f *fakeCodexService) StartTurn(ctx context.Context, threadID string, userText string, imageURLs []string) (*codexTurnHandle, error) {
+func (f *fakeCodexService) StartTurn(ctx context.Context, threadID string, userText string, imagePaths []string) (*codexTurnHandle, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -1058,9 +1062,9 @@ func (f *fakeCodexService) StartTurn(ctx context.Context, threadID string, userT
 	f.turns[threadID] = resultCh
 	f.events[threadID] = eventCh
 	f.startCalls = append(f.startCalls, fakeStartCall{
-		threadID:  threadID,
-		text:      userText,
-		imageURLs: imageURLs,
+		threadID:   threadID,
+		text:       userText,
+		imagePaths: imagePaths,
 	})
 	return &codexTurnHandle{
 		ThreadID: threadID,
@@ -1070,14 +1074,14 @@ func (f *fakeCodexService) StartTurn(ctx context.Context, threadID string, userT
 	}, nil
 }
 
-func (f *fakeCodexService) SteerTurn(ctx context.Context, threadID string, turnID string, userText string, imageURLs []string) error {
+func (f *fakeCodexService) SteerTurn(ctx context.Context, threadID string, turnID string, userText string, imagePaths []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.steerCalls = append(f.steerCalls, fakeSteerCall{
-		threadID:  threadID,
-		turnID:    turnID,
-		text:      userText,
-		imageURLs: imageURLs,
+		threadID:   threadID,
+		turnID:     turnID,
+		text:       userText,
+		imagePaths: imagePaths,
 	})
 	return nil
 }

@@ -37,10 +37,10 @@ type chatWorker struct {
 }
 
 type chatEvent struct {
-	messageID int64
-	text      string
-	imageURLs []string
-	isCommand bool
+	messageID  int64
+	text       string
+	imagePaths []string
+	isCommand  bool
 }
 
 type activeChatTurn struct {
@@ -50,6 +50,7 @@ type activeChatTurn struct {
 	eventCh        <-chan codex.TurnStreamEvent
 	resultCh       <-chan codex.TurnResult
 	stopTyping     func()
+	tmpFiles       []string // temp image files to remove after the turn
 }
 
 type relayState struct {

@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -16,7 +18,10 @@ import (
 type Service interface {
 	DeleteWebhook(ctx context.Context, dropPending bool) error
 	GetUpdates(ctx context.Context, offset *int64, timeoutSeconds int) ([]Update, error)
-	GetFile(ctx context.Context, fileID string) (string, error)
+	// DownloadFile fetches the image bytes for a Telegram file ID. It also
+	// returns the file extension (e.g. ".jpg") derived from Telegram's file path,
+	// which callers can use when writing the data to a local file.
+	DownloadFile(ctx context.Context, fileID string) (data []byte, ext string, err error)
 	SendMessage(ctx context.Context, chatID int64, text string) error
 	SendChatAction(ctx context.Context, chatID int64, action string) error
 	SetMyCommands(ctx context.Context, commands []BotCommand) error
@@ -82,21 +87,41 @@ func (c *Client) DeleteWebhook(ctx context.Context, dropPending bool) error {
 	return c.call(ctx, "deleteWebhook", payload, &result)
 }
 
-func (c *Client) GetFile(ctx context.Context, fileID string) (string, error) {
+// DownloadFile fetches the bytes for a Telegram file ID. The returned ext is
+// the file extension (e.g. ".jpg") from Telegram's file path; callers should
+// use it when writing the data to disk. The bot-token-bearing download URL is
+// used internally and is never returned to callers.
+func (c *Client) DownloadFile(ctx context.Context, fileID string) ([]byte, string, error) {
 	logx.Debug("telegram getFile", "file_id", fileID)
-	payload := map[string]any{
-		"file_id": fileID,
-	}
 	var result struct {
 		FilePath string `json:"file_path"`
 	}
-	if err := c.call(ctx, "getFile", payload, &result); err != nil {
-		return "", err
+	if err := c.call(ctx, "getFile", map[string]any{"file_id": fileID}, &result); err != nil {
+		return nil, "", err
 	}
 	if result.FilePath == "" {
-		return "", fmt.Errorf("getFile returned empty file_path for file_id %s", fileID)
+		return nil, "", fmt.Errorf("getFile returned empty file_path for file_id %s", fileID)
 	}
-	return c.fileBaseURL + "/" + result.FilePath, nil
+	ext := filepath.Ext(result.FilePath) // e.g. ".jpg"
+	downloadURL := c.fileBaseURL + "/" + result.FilePath
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("create download request for file_id %s: %w", fileID, err)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("download telegram file %s: %w", fileID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, "", fmt.Errorf("download telegram file %s returned HTTP %s", fileID, resp.Status)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("read telegram file %s: %w", fileID, err)
+	}
+	logx.Debug("telegram file downloaded", "file_id", fileID, "bytes", len(data), "ext", ext)
+	return data, ext, nil
 }
 
 func (c *Client) GetUpdates(ctx context.Context, offset *int64, timeoutSeconds int) ([]Update, error) {
