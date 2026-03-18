@@ -89,6 +89,19 @@ func TestParseConfigRequiresAllowedChatIDs(t *testing.T) {
 	}
 }
 
+func TestParseConfigDefaultsModelToGPT54(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	t.Setenv("TELEGRAM_ALLOWED_CHAT_IDS", "123")
+
+	cfg, err := parseConfigForTest(t)
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	if cfg.CodexModel != "gpt-5.4" {
+		t.Fatalf("expected default model gpt-5.4, got %q", cfg.CodexModel)
+	}
+}
+
 func parseConfigForTest(t *testing.T, args ...string) (Config, error) {
 	t.Helper()
 	return Parse(args)

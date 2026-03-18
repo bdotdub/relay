@@ -75,7 +75,7 @@ Codex process settings:
 
 Optional Codex turn settings:
 
-- `CODEX_MODEL` (default `gpt-5.3-codex-spark`)
+- `CODEX_MODEL` (default `gpt-5.4`)
 - `CODEX_PERSONALITY`
 - `CODEX_SANDBOX`
 - `CODEX_APPROVAL_POLICY`

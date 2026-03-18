@@ -277,7 +277,7 @@ func TestStatusShowsLastTokenUsage(t *testing.T) {
 	if !stringsContains(reply, "Execution: default (approval=never, sandbox=workspace-write)") {
 		t.Fatalf("status reply missing execution profile: %q", reply)
 	}
-	if !stringsContains(reply, "Model: gpt-5.3-codex-spark (default)") {
+	if !stringsContains(reply, "Model: gpt-5.4 (default)") {
 		t.Fatalf("status reply missing default model: %q", reply)
 	}
 }
@@ -334,7 +334,7 @@ func TestYoloCommandStartsFreshThreadAndUpdatesStatus(t *testing.T) {
 	if !stringsContains(status, "Execution: YOLO (approval=never, sandbox=danger-full-access)") {
 		t.Fatalf("status reply missing yolo profile: %q", status)
 	}
-	if !stringsContains(status, "Model: gpt-5.3-codex-spark (default)") {
+	if !stringsContains(status, "Model: gpt-5.4 (default)") {
 		t.Fatalf("status reply missing default model: %q", status)
 	}
 	if !stringsContains(status, "Thread: new-thread-1") {
@@ -438,8 +438,8 @@ func TestModelDefaultClearsOverride(t *testing.T) {
 	if len(newCalls) != 2 {
 		t.Fatalf("expected two fresh threads, got %#v", newCalls)
 	}
-	if newCalls[1].options.Model != "gpt-5.3-codex-spark" {
-		t.Fatalf("expected reset to default spark model, got %#v", newCalls[1])
+	if newCalls[1].options.Model != "gpt-5.4" {
+		t.Fatalf("expected reset to default model, got %#v", newCalls[1])
 	}
 	if app.modelOverrideForChat(35) != "" {
 		t.Fatalf("expected model override to be cleared, got %q", app.modelOverrideForChat(35))
@@ -1164,7 +1164,7 @@ func testConfig(t *testing.T) configpkg.Config {
 		CodexCWD:                   t.TempDir(),
 		CodexStartAppServer:        true,
 		CodexAppServerCommand:      []string{"codex", "app-server"},
-		CodexModel:                 "gpt-5.3-codex-spark",
+		CodexModel:                 "gpt-5.4",
 		CodexPersonality:           "pragmatic",
 		CodexSandbox:               "workspace-write",
 		CodexApprovalPolicy:        "never",

@@ -22,8 +22,10 @@ type Service interface {
 }
 
 type ThreadOptions struct {
-	Yolo  bool
-	Model string
+	Yolo           bool
+	Model          string
+	ServiceTier    string
+	ServiceTierSet bool
 }
 
 type Client struct {
@@ -595,7 +597,7 @@ func (c *Client) baseThreadParams(options ThreadOptions) map[string]any {
 	}
 	insertOptionalString(params, "model", c.modelForOptions(options))
 	insertOptionalString(params, "personality", c.cfg.CodexPersonality)
-	insertOptionalString(params, "serviceTier", c.cfg.CodexServiceTier)
+	insertOptionalString(params, "serviceTier", c.serviceTierForOptions(options))
 	insertOptionalString(params, "baseInstructions", c.cfg.CodexBaseInstructions)
 	insertOptionalString(params, "developerInstructions", c.developerInstructions())
 	if merged := c.mergedThreadConfig(options); len(merged) > 0 {
@@ -618,6 +620,13 @@ func (c *Client) modelForOptions(options ThreadOptions) string {
 		return options.Model
 	}
 	return c.cfg.CodexModel
+}
+
+func (c *Client) serviceTierForOptions(options ThreadOptions) string {
+	if options.ServiceTierSet {
+		return strings.TrimSpace(options.ServiceTier)
+	}
+	return strings.TrimSpace(c.cfg.CodexServiceTier)
 }
 
 func (c *Client) newThreadParams(options ThreadOptions) map[string]any {

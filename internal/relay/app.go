@@ -20,6 +20,7 @@ type relayApp struct {
 	threadIDsByChat map[string]string
 	verboseByChat   map[int64]bool
 	yoloByChat      map[int64]bool
+	serviceTierByChat map[int64]string
 	modelByChat     map[int64]string
 	lastUsageByChat map[int64]codex.TokenUsage
 
@@ -54,10 +55,11 @@ type activeChatTurn struct {
 }
 
 type relayState struct {
-	Threads       map[string]string `json:"threads,omitempty"`
-	VerboseByChat map[string]bool   `json:"verbose_by_chat,omitempty"`
-	YoloByChat    map[string]bool   `json:"yolo_by_chat,omitempty"`
-	ModelByChat   map[string]string `json:"model_by_chat,omitempty"`
+	Threads           map[string]string `json:"threads,omitempty"`
+	VerboseByChat     map[string]bool   `json:"verbose_by_chat,omitempty"`
+	YoloByChat        map[string]bool   `json:"yolo_by_chat,omitempty"`
+	ServiceTierByChat map[string]string `json:"service_tier_by_chat,omitempty"`
+	ModelByChat       map[string]string `json:"model_by_chat,omitempty"`
 }
 
 func Run(ctx context.Context, cfg config.Config) error {
@@ -86,6 +88,7 @@ func newRelayAppWithServices(cfg config.Config, telegramSvc telegram.Service, co
 		threadIDsByChat: map[string]string{},
 		verboseByChat:   map[int64]bool{},
 		yoloByChat:      map[int64]bool{},
+		serviceTierByChat: map[int64]string{},
 		modelByChat:     map[int64]string{},
 		lastUsageByChat: map[int64]codex.TokenUsage{},
 		workers:         map[int64]*chatWorker{},

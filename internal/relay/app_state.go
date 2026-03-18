@@ -30,6 +30,13 @@ func (a *relayApp) yoloForChat(chatID int64) bool {
 	return a.yoloByChat[chatID]
 }
 
+func (a *relayApp) serviceTierOverrideForChat(chatID int64) (string, bool) {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	value, ok := a.serviceTierByChat[chatID]
+	return value, ok
+}
+
 func (a *relayApp) modelOverrideForChat(chatID int64) string {
 	a.stateMu.RLock()
 	defer a.stateMu.RUnlock()
@@ -192,6 +199,54 @@ func (a *relayApp) setModelForChat(chatID int64, text string) (string, bool, str
 	return a.modelForChat(chatID), true, ""
 }
 
+func (a *relayApp) toggleFastModeForChat(chatID int64, text string) (bool, bool, string) {
+	command := strings.TrimSpace(text)
+	arg := ""
+	if index := strings.IndexAny(command, " \t\r\n"); index >= 0 {
+		arg = strings.TrimSpace(command[index+1:])
+	}
+
+	current, _ := a.fastModeForChat(chatID)
+	next := current
+	switch arg {
+	case "", "toggle":
+		next = !current
+	case "on":
+		next = true
+	case "off":
+		next = false
+	case "status":
+		return current, false, fmt.Sprintf("Fast mode is %s for this chat.", enabledDisabled(current))
+	default:
+		return current, false, "Usage: /fast, /fast on, /fast off, or /fast status"
+	}
+
+	if next == current {
+		return current, false, ""
+	}
+
+	a.stateMu.Lock()
+	if next {
+		a.serviceTierByChat[chatID] = "fast"
+	} else {
+		a.serviceTierByChat[chatID] = "default"
+	}
+	a.stateMu.Unlock()
+
+	logx.Debug("chat fast mode changed", "chat_id", chatID, "enabled", next)
+	if err := a.saveState(); err != nil {
+		a.stateMu.Lock()
+		if current {
+			a.serviceTierByChat[chatID] = "fast"
+		} else {
+			a.serviceTierByChat[chatID] = "default"
+		}
+		a.stateMu.Unlock()
+		return current, false, fmt.Sprintf("Failed to update fast mode: %v", err)
+	}
+	return next, true, ""
+}
+
 func (a *relayApp) setThreadIDForChat(chatID int64, threadID string) error {
 	chatKey := fmt.Sprintf("%d", chatID)
 	a.stateMu.Lock()
@@ -225,6 +280,7 @@ func (a *relayApp) loadState() error {
 			a.threadIDsByChat = map[string]string{}
 			a.verboseByChat = map[int64]bool{}
 			a.yoloByChat = map[int64]bool{}
+			a.serviceTierByChat = map[int64]string{}
 			a.modelByChat = map[int64]string{}
 			a.stateMu.Unlock()
 			return nil
@@ -233,13 +289,14 @@ func (a *relayApp) loadState() error {
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err == nil {
-		if _, hasThreads := raw["threads"]; hasThreads || raw["verbose_by_chat"] != nil || raw["yolo_by_chat"] != nil || raw["model_by_chat"] != nil {
+		if _, hasThreads := raw["threads"]; hasThreads || raw["verbose_by_chat"] != nil || raw["yolo_by_chat"] != nil || raw["service_tier_by_chat"] != nil || raw["model_by_chat"] != nil {
 			var state relayState
 			if err := json.Unmarshal(data, &state); err != nil {
 				a.stateMu.Lock()
 				a.threadIDsByChat = map[string]string{}
 				a.verboseByChat = map[int64]bool{}
 				a.yoloByChat = map[int64]bool{}
+				a.serviceTierByChat = map[int64]string{}
 				a.modelByChat = map[int64]string{}
 				a.stateMu.Unlock()
 				return nil
@@ -251,6 +308,7 @@ func (a *relayApp) loadState() error {
 			}
 			a.verboseByChat = decodeBoolMap(state.VerboseByChat)
 			a.yoloByChat = decodeBoolMap(state.YoloByChat)
+			a.serviceTierByChat = decodeStringMap(state.ServiceTierByChat)
 			a.modelByChat = decodeStringMap(state.ModelByChat)
 			a.stateMu.Unlock()
 			return nil
@@ -263,6 +321,7 @@ func (a *relayApp) loadState() error {
 		a.threadIDsByChat = map[string]string{}
 		a.verboseByChat = map[int64]bool{}
 		a.yoloByChat = map[int64]bool{}
+		a.serviceTierByChat = map[int64]string{}
 		a.modelByChat = map[int64]string{}
 		a.stateMu.Unlock()
 		return nil
@@ -271,6 +330,7 @@ func (a *relayApp) loadState() error {
 	a.threadIDsByChat = mapping
 	a.verboseByChat = map[int64]bool{}
 	a.yoloByChat = map[int64]bool{}
+	a.serviceTierByChat = map[int64]string{}
 	a.modelByChat = map[int64]string{}
 	a.stateMu.Unlock()
 	return nil
@@ -287,10 +347,11 @@ func (a *relayApp) saveState() error {
 
 	a.stateMu.RLock()
 	state := relayState{
-		Threads:       a.threadIDsByChat,
-		VerboseByChat: encodeBoolMap(a.verboseByChat),
-		YoloByChat:    encodeBoolMap(a.yoloByChat),
-		ModelByChat:   encodeStringMap(a.modelByChat),
+		Threads:           a.threadIDsByChat,
+		VerboseByChat:     encodeBoolMap(a.verboseByChat),
+		YoloByChat:        encodeBoolMap(a.yoloByChat),
+		ServiceTierByChat: encodeStringMap(a.serviceTierByChat),
+		ModelByChat:       encodeStringMap(a.modelByChat),
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	a.stateMu.RUnlock()

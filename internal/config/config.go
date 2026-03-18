@@ -77,7 +77,7 @@ func parse(args []string, output io.Writer) (Config, error) {
 	fs.BoolVar(&noStartAppServer, "no-start-app-server", false, "Do not start a local Codex app-server subprocess")
 	fs.StringVar(&codexAppServerCommand, "codex-app-server-command", envString("CODEX_APP_SERVER_COMMAND", "codex app-server"), "Command used to start the Codex app server")
 	fs.StringVar(&cfg.CodexAppServerWSURL, "codex-app-server-ws-url", envString("CODEX_APP_SERVER_WS_URL", ""), "WebSocket URL for an already-running Codex app server")
-	fs.StringVar(&cfg.CodexModel, "codex-model", envString("CODEX_MODEL", "gpt-5.3-codex-spark"), "Codex model override")
+	fs.StringVar(&cfg.CodexModel, "codex-model", envString("CODEX_MODEL", "gpt-5.4"), "Codex model override")
 	fs.StringVar(&cfg.CodexPersonality, "codex-personality", envString("CODEX_PERSONALITY", "pragmatic"), "Optional Codex personality override")
 	fs.StringVar(&cfg.CodexSandbox, "codex-sandbox", envString("CODEX_SANDBOX", "workspace-write"), "Codex sandbox mode")
 	fs.StringVar(&cfg.CodexApprovalPolicy, "codex-approval-policy", envString("CODEX_APPROVAL_POLICY", "never"), "Codex approval policy")
