@@ -2,7 +2,7 @@
 
 Relay messages between Telegram and a Codex app server.
 
-<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/f517b20a-6807-47b1-9ded-3a1d8435a314" />
+<img width="1536" height="1024" alt="relay" src="https://github.com/user-attachments/assets/b025aeca-650c-491b-b155-80f22caf7b0b" />
 
 ## Quick Start
 
