@@ -277,6 +277,9 @@ func TestStatusShowsLastTokenUsage(t *testing.T) {
 	if !stringsContains(reply, "Execution: default (approval=never, sandbox=workspace-write)") {
 		t.Fatalf("status reply missing execution profile: %q", reply)
 	}
+	if !stringsContains(reply, "Fast mode: enabled") {
+		t.Fatalf("status reply missing fast mode: %q", reply)
+	}
 	if !stringsContains(reply, "Model: gpt-5.4 (default)") {
 		t.Fatalf("status reply missing default model: %q", reply)
 	}
@@ -334,11 +337,68 @@ func TestYoloCommandStartsFreshThreadAndUpdatesStatus(t *testing.T) {
 	if !stringsContains(status, "Execution: YOLO (approval=never, sandbox=danger-full-access)") {
 		t.Fatalf("status reply missing yolo profile: %q", status)
 	}
+	if !stringsContains(status, "Fast mode: enabled") {
+		t.Fatalf("status reply missing fast mode: %q", status)
+	}
 	if !stringsContains(status, "Model: gpt-5.4 (default)") {
 		t.Fatalf("status reply missing default model: %q", status)
 	}
 	if !stringsContains(status, "Thread: new-thread-1") {
 		t.Fatalf("status reply missing yolo thread id: %q", status)
+	}
+}
+
+func TestFastCommandStartsFreshThreadAndUpdatesStatus(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 1,
+		Message: &telegramMessage{
+			MessageID: 553,
+			Chat:      privateChat(32),
+			Text:      "/fast off",
+		},
+	}); err != nil {
+		t.Fatalf("handle fast command: %v", err)
+	}
+
+	waitFor(t, "fast ack", func() bool {
+		return telegram.messageCount() == 1
+	})
+
+	reply := telegram.messages()[0].text
+	if !stringsContains(reply, "Fast mode disabled") || !stringsContains(reply, "thread_id=new-thread-1") {
+		t.Fatalf("unexpected fast ack: %q", reply)
+	}
+
+	newCalls := codex.newThreadCallsSnapshot()
+	if len(newCalls) != 1 || !newCalls[0].options.ServiceTierSet || newCalls[0].options.ServiceTier != "" {
+		t.Fatalf("expected fast override to clear service tier, got %#v", newCalls)
+	}
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 2,
+		Message: &telegramMessage{
+			MessageID: 554,
+			Chat:      privateChat(32),
+			Text:      "/status",
+		},
+	}); err != nil {
+		t.Fatalf("handle status command: %v", err)
+	}
+
+	waitFor(t, "fast status reply", func() bool {
+		return telegram.messageCount() == 2
+	})
+
+	status := telegram.messages()[1].text
+	if !stringsContains(status, "Fast mode: disabled") {
+		t.Fatalf("status reply missing fast mode override: %q", status)
 	}
 }
 
@@ -444,6 +504,52 @@ func TestModelDefaultClearsOverride(t *testing.T) {
 	if app.modelOverrideForChat(35) != "" {
 		t.Fatalf("expected model override to be cleared, got %q", app.modelOverrideForChat(35))
 	}
+}
+
+func TestFastModeChangesThreadOptionsForSubsequentTurns(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 1,
+		Message: &telegramMessage{
+			MessageID: 563,
+			Chat:      privateChat(33),
+			Text:      "/fast off",
+		},
+	}); err != nil {
+		t.Fatalf("handle fast command: %v", err)
+	}
+
+	waitFor(t, "fast off ack", func() bool {
+		return telegram.messageCount() == 1
+	})
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 2,
+		Message: &telegramMessage{
+			MessageID: 564,
+			Chat:      privateChat(33),
+			Text:      "Ship it",
+		},
+	}); err != nil {
+		t.Fatalf("handle message: %v", err)
+	}
+
+	waitFor(t, "turn start", func() bool {
+		return codex.startCount() == 1
+	})
+
+	ensureCalls := codex.ensureThreadCallsSnapshot()
+	if len(ensureCalls) != 1 || ensureCalls[0].threadID != "new-thread-1" || !ensureCalls[0].options.ServiceTierSet || ensureCalls[0].options.ServiceTier != "" {
+		t.Fatalf("expected fast override ensureThread call for the fresh thread, got %#v", ensureCalls)
+	}
+
+	codex.finishTurn("new-thread-1", turnResult{Text: "Done"})
 }
 
 func TestReloadCommandAcknowledgesAndInvokesReloadHook(t *testing.T) {
@@ -588,7 +694,7 @@ func TestLoadStateSupportsLegacyAndNewFormats(t *testing.T) {
 	}
 
 	newApp := newRelayAppWithServices(cfg, &fakeTelegramService{}, newFakeCodexService())
-	newData := []byte("{\n  \"threads\": {\n    \"9\": \"thread-9\"\n  },\n  \"verbose_by_chat\": {\n    \"9\": true\n  },\n  \"yolo_by_chat\": {\n    \"9\": true\n  }\n}\n")
+	newData := []byte("{\n  \"threads\": {\n    \"9\": \"thread-9\"\n  },\n  \"verbose_by_chat\": {\n    \"9\": true\n  },\n  \"yolo_by_chat\": {\n    \"9\": true\n  },\n  \"service_tier_by_chat\": {\n    \"9\": \"default\"\n  }\n}\n")
 	if err := os.WriteFile(cfg.StatePath, newData, 0o644); err != nil {
 		t.Fatalf("write new state: %v", err)
 	}
@@ -603,6 +709,9 @@ func TestLoadStateSupportsLegacyAndNewFormats(t *testing.T) {
 	}
 	if !newApp.yoloForChat(9) {
 		t.Fatal("new state should enable yolo")
+	}
+	if newApp.fastModeForChat(9) {
+		t.Fatal("new state should disable fast mode with default override")
 	}
 
 	modelApp := newRelayAppWithServices(cfg, &fakeTelegramService{}, newFakeCodexService())
@@ -1168,6 +1277,7 @@ func testConfig(t *testing.T) configpkg.Config {
 		CodexPersonality:           "pragmatic",
 		CodexSandbox:               "workspace-write",
 		CodexApprovalPolicy:        "never",
+		CodexServiceTier:           "fast",
 	}
 }
 

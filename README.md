@@ -18,7 +18,7 @@ Relay messages between Telegram and a Codex app server.
 - For each plain-text message, sends it into an existing Codex thread for that chat.
 - Forwards Codex answers back to the same Telegram chat.
 - Keeps one conversation thread per chat and supports steering while a turn is active.
-- Stores chat → thread state plus per-chat verbose, YOLO, and model settings in `.relay-state.json` by default.
+- Stores chat → thread state plus per-chat verbose, YOLO, fast-mode, and model settings in `.relay-state.json` by default.
 - Injects Telegram-specific developer instructions so replies use Telegram MarkdownV2 and avoid unnecessary filesystem paths.
 - Registers supported slash commands with Telegram via `setMyCommands` at startup.
 
@@ -43,6 +43,7 @@ The following commands are registered automatically and available in Telegram’
 - `/reset`: same as `/new`
 - `/verbose` / `/verbose on|off|status`: toggle or inspect visible intermediate output
 - `/yolo` / `/yolo on|off|status`: toggle YOLO execution mode and start a fresh thread when changed
+- `/fast` / `/fast on|off|status`: toggle fast mode and start a fresh thread when changed
 - `/model`: show current chat model
 - `/model <name>`: set chat model override and start a fresh thread
 - `/model default`: clear model override and use default
@@ -79,7 +80,7 @@ Optional Codex turn settings:
 - `CODEX_PERSONALITY`
 - `CODEX_SANDBOX`
 - `CODEX_APPROVAL_POLICY`
-- `CODEX_SERVICE_TIER`
+- `CODEX_SERVICE_TIER` (default `fast`)
 - `CODEX_BASE_INSTRUCTIONS`
 - `CODEX_DEVELOPER_INSTRUCTIONS`
 - `CODEX_CONFIG_JSON`
@@ -125,7 +126,7 @@ go run . \
 - Verbose output is delivered as separate Telegram messages while a turn is running
 - `/model <name>` depends on the configured Codex server accepting that model string
 - Replies are delivered when a turn completes (no streaming)
-- Thread, YOLO, and model state are local-file state, not shared across instances
+- Thread, YOLO, fast-mode, and model state are local-file state, not shared across instances
 
 ## Verification
 

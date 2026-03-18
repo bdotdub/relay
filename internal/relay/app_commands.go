@@ -31,9 +31,9 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 		if !w.app.cfg.CodexStartAppServer {
 			mode = "websocket"
 		}
-		return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Transport: %s\nExecution: %s\nModel: %s\nThread: %s\nCWD: %s\nTokens: %s", mode, w.app.executionProfileSummary(w.chatID), w.app.modelSummaryForChat(w.chatID), threadID, w.app.cfg.CodexCWD, formatTokenUsage(w.app.lastUsageForChat(w.chatID))))
+		return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Transport: %s\nExecution: %s\nFast mode: %s\nModel: %s\nThread: %s\nCWD: %s\nTokens: %s", mode, w.app.executionProfileSummary(w.chatID), enabledDisabled(w.app.fastModeForChat(w.chatID)), w.app.modelSummaryForChat(w.chatID), threadID, w.app.cfg.CodexCWD, formatTokenUsage(w.app.lastUsageForChat(w.chatID))))
 	case "/help":
-		return w.app.telegram.SendMessage(ctx, w.chatID, "Send any text message to relay it to Codex.\n/new or /reset starts a fresh Codex thread.\n/status shows the current thread mapping, execution mode, model, and last token usage.\n/verbose toggles intermediate visible output for this chat.\n/yolo toggles YOLO execution mode for this chat and starts a fresh thread.\n/model sets a per-chat model override and starts a fresh thread.\n/reload replaces the running relay process with the current binary.")
+		return w.app.telegram.SendMessage(ctx, w.chatID, "Send any text message to relay it to Codex.\n/new or /reset starts a fresh Codex thread.\n/status shows the current thread mapping, execution mode, fast-mode state, model, and last token usage.\n/verbose toggles intermediate visible output for this chat.\n/yolo toggles YOLO execution mode for this chat and starts a fresh thread.\n/fast toggles fast mode for this chat and starts a fresh thread.\n/model sets a per-chat model override and starts a fresh thread.\n/reload replaces the running relay process with the current binary.")
 	case "/reload":
 		if err := w.app.telegram.SendMessage(ctx, w.chatID, "Reloading the relay process from the current binary. Active turns will be interrupted."); err != nil {
 			return err
@@ -60,7 +60,7 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 		if !changed {
 			return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("YOLO mode is already %s for this chat.", enabledDisabled(enabled)))
 		}
-		threadID, err := w.app.codex.NewThread(ctx, codex.ThreadOptions{Yolo: enabled})
+		threadID, err := w.app.codex.NewThread(ctx, w.app.threadOptionsForChat(w.chatID))
 		if err != nil {
 			return err
 		}
@@ -68,6 +68,22 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 			return err
 		}
 		return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("YOLO mode %s for this chat. Started a fresh Codex thread with model %s.\nthread_id=%s", enabledDisabled(enabled), w.app.modelForChat(w.chatID), threadID))
+	case "/fast":
+		enabled, changed, message := w.app.toggleFastModeForChat(w.chatID, text)
+		if message != "" {
+			return w.app.telegram.SendMessage(ctx, w.chatID, message)
+		}
+		if !changed {
+			return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Fast mode is already %s for this chat.", enabledDisabled(enabled)))
+		}
+		threadID, err := w.app.codex.NewThread(ctx, w.app.threadOptionsForChat(w.chatID))
+		if err != nil {
+			return err
+		}
+		if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {
+			return err
+		}
+		return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Fast mode %s for this chat. Started a fresh Codex thread with model %s.\nthread_id=%s", enabledDisabled(enabled), w.app.modelForChat(w.chatID), threadID))
 	case "/model":
 		model, changed, message := w.app.setModelForChat(w.chatID, text)
 		if message != "" {
@@ -90,10 +106,17 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 }
 
 func (a *relayApp) threadOptionsForChat(chatID int64) codex.ThreadOptions {
-	return codex.ThreadOptions{
+	options := codex.ThreadOptions{
 		Yolo:  a.yoloForChat(chatID),
 		Model: a.modelForChat(chatID),
 	}
+	if tier, ok := a.serviceTierOverrideForChat(chatID); ok {
+		options.ServiceTierSet = true
+		if strings.EqualFold(strings.TrimSpace(tier), "fast") {
+			options.ServiceTier = "fast"
+		}
+	}
+	return options
 }
 
 func (a *relayApp) executionModeName(chatID int64) string {
@@ -124,6 +147,13 @@ func (a *relayApp) modelSummaryForChat(chatID int64) string {
 		return fmt.Sprintf("%s (default)", model)
 	}
 	return fmt.Sprintf("%s (override)", model)
+}
+
+func (a *relayApp) fastModeForChat(chatID int64) bool {
+	if tier, ok := a.serviceTierOverrideForChat(chatID); ok {
+		return strings.EqualFold(strings.TrimSpace(tier), "fast")
+	}
+	return strings.EqualFold(strings.TrimSpace(a.cfg.CodexServiceTier), "fast")
 }
 
 func enabledDisabled(enabled bool) string {

@@ -102,6 +102,19 @@ func TestParseConfigDefaultsModelToGPT54(t *testing.T) {
 	}
 }
 
+func TestParseConfigDefaultsServiceTierToFast(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	t.Setenv("TELEGRAM_ALLOWED_CHAT_IDS", "123")
+
+	cfg, err := parseConfigForTest(t)
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	if cfg.CodexServiceTier != "fast" {
+		t.Fatalf("expected default service tier fast, got %q", cfg.CodexServiceTier)
+	}
+}
+
 func parseConfigForTest(t *testing.T, args ...string) (Config, error) {
 	t.Helper()
 	return Parse(args)

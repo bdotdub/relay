@@ -33,17 +33,17 @@ func TestTelegramMarkdownV2FormatsHeadingsAndCode(t *testing.T) {
 	text := "# Title\nUse `fmt.Println()` here.\n\n```go\nfmt.Println(\"hi\")\n```"
 	formatted := markdownV2(text)
 
-	expected := "*Title*\nUse `fmt.Println()` here\\.\n\n```go\nfmt.Println(\"hi\")\n```"
+	expected := "*Title*\nUse `fmt.Println()` here\\.\n\n```go\nfmt.Println(\"hi\")\n```"
 	if formatted != expected {
 		t.Fatalf("unexpected formatted markdown:\nwant: %q\ngot:  %q", expected, formatted)
 	}
 }
 
-func TestTelegramMarkdownV2UsesNBSPBeforeInlineCode(t *testing.T) {
+func TestTelegramMarkdownV2KeepsSpaceBeforeInlineCode(t *testing.T) {
 	text := "Executed: `designprompt-loader --style bauhaus`"
 	formatted := markdownV2(text)
 
-	expected := "Executed: `designprompt-loader --style bauhaus`"
+	expected := "Executed: `designprompt-loader --style bauhaus`"
 	if formatted != expected {
 		t.Fatalf("unexpected formatted markdown:\nwant: %q\ngot:  %q", expected, formatted)
 	}

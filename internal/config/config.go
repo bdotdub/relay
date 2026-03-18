@@ -81,7 +81,7 @@ func parse(args []string, output io.Writer) (Config, error) {
 	fs.StringVar(&cfg.CodexPersonality, "codex-personality", envString("CODEX_PERSONALITY", "pragmatic"), "Optional Codex personality override")
 	fs.StringVar(&cfg.CodexSandbox, "codex-sandbox", envString("CODEX_SANDBOX", "workspace-write"), "Codex sandbox mode")
 	fs.StringVar(&cfg.CodexApprovalPolicy, "codex-approval-policy", envString("CODEX_APPROVAL_POLICY", "never"), "Codex approval policy")
-	fs.StringVar(&cfg.CodexServiceTier, "codex-service-tier", envString("CODEX_SERVICE_TIER", ""), "Optional Codex service tier override")
+	fs.StringVar(&cfg.CodexServiceTier, "codex-service-tier", envString("CODEX_SERVICE_TIER", "fast"), "Optional Codex service tier override")
 	fs.StringVar(&cfg.CodexBaseInstructions, "codex-base-instructions", envString("CODEX_BASE_INSTRUCTIONS", ""), "Optional Codex base instructions")
 	fs.StringVar(&cfg.CodexDeveloperInstructions, "codex-developer-instructions", envString("CODEX_DEVELOPER_INSTRUCTIONS", ""), "Optional Codex developer instructions")
 	fs.StringVar(&codexConfigJSON, "codex-config-json", envString("CODEX_CONFIG_JSON", ""), "Optional JSON object passed as Codex thread config")

@@ -206,7 +206,7 @@ func (a *relayApp) toggleFastModeForChat(chatID int64, text string) (bool, bool,
 		arg = strings.TrimSpace(command[index+1:])
 	}
 
-	current, _ := a.fastModeForChat(chatID)
+	current := a.fastModeForChat(chatID)
 	next := current
 	switch arg {
 	case "", "toggle":

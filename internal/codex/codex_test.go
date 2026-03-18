@@ -121,6 +121,25 @@ func TestBaseThreadParamsUsesPerThreadModelOverride(t *testing.T) {
 	}
 }
 
+func TestBaseThreadParamsUsesPerThreadServiceTierOverride(t *testing.T) {
+	client := &Client{
+		cfg: config.Config{
+			CodexCWD:         "/tmp/project",
+			CodexServiceTier: "fast",
+		},
+	}
+
+	params := client.baseThreadParams(ThreadOptions{ServiceTierSet: true, ServiceTier: ""})
+	if _, ok := params["serviceTier"]; ok {
+		t.Fatalf("did not expect service tier when override clears it: %#v", params["serviceTier"])
+	}
+
+	params = client.baseThreadParams(ThreadOptions{ServiceTierSet: true, ServiceTier: "fast"})
+	if got := params["serviceTier"]; got != "fast" {
+		t.Fatalf("unexpected service tier: %#v", got)
+	}
+}
+
 func TestBaseThreadParamsAppendsRelayDeveloperInstructions(t *testing.T) {
 	client := &Client{
 		cfg: config.Config{

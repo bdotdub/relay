@@ -16,13 +16,13 @@ type relayApp struct {
 	codex    codex.Service
 	reload   func() error
 
-	stateMu         sync.RWMutex
-	threadIDsByChat map[string]string
-	verboseByChat   map[int64]bool
-	yoloByChat      map[int64]bool
+	stateMu           sync.RWMutex
+	threadIDsByChat   map[string]string
+	verboseByChat     map[int64]bool
+	yoloByChat        map[int64]bool
 	serviceTierByChat map[int64]string
-	modelByChat     map[int64]string
-	lastUsageByChat map[int64]codex.TokenUsage
+	modelByChat       map[int64]string
+	lastUsageByChat   map[int64]codex.TokenUsage
 
 	workersMu sync.Mutex
 	workers   map[int64]*chatWorker
@@ -81,16 +81,16 @@ func newRelayApp(ctx context.Context, cfg config.Config) (*relayApp, error) {
 
 func newRelayAppWithServices(cfg config.Config, telegramSvc telegram.Service, codexSvc codex.Service) *relayApp {
 	return &relayApp{
-		cfg:             cfg,
-		telegram:        telegramSvc,
-		codex:           codexSvc,
-		reload:          reloadCurrentProcess,
-		threadIDsByChat: map[string]string{},
-		verboseByChat:   map[int64]bool{},
-		yoloByChat:      map[int64]bool{},
+		cfg:               cfg,
+		telegram:          telegramSvc,
+		codex:             codexSvc,
+		reload:            reloadCurrentProcess,
+		threadIDsByChat:   map[string]string{},
+		verboseByChat:     map[int64]bool{},
+		yoloByChat:        map[int64]bool{},
 		serviceTierByChat: map[int64]string{},
-		modelByChat:     map[int64]string{},
-		lastUsageByChat: map[int64]codex.TokenUsage{},
-		workers:         map[int64]*chatWorker{},
+		modelByChat:       map[int64]string{},
+		lastUsageByChat:   map[int64]codex.TokenUsage{},
+		workers:           map[int64]*chatWorker{},
 	}
 }
