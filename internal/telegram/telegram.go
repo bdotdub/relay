@@ -373,6 +373,7 @@ func markdownV2(text string) string {
 		if strings.HasPrefix(text, "[") {
 			link, rest, ok := consumeLink(text)
 			if ok {
+				replaceTrailingColonSpaceWithNBSP(&out)
 				out.WriteString(link)
 				text = rest
 				continue
@@ -396,6 +397,23 @@ func markdownV2(text string) string {
 		text = text[next:]
 	}
 	return out.String()
+}
+
+func replaceTrailingColonSpaceWithNBSP(out *strings.Builder) {
+	if out == nil {
+		return
+	}
+	current := out.String()
+	switch {
+	case strings.HasSuffix(current, ": "):
+		out.Reset()
+		out.WriteString(strings.TrimSuffix(current, ": "))
+		out.WriteString(":\u00a0")
+	case strings.HasSuffix(current, ":"):
+		out.Reset()
+		out.WriteString(current)
+		out.WriteRune('\u00a0')
+	}
 }
 
 func consumeFencedCodeBlock(text string) (string, string, bool) {

@@ -59,6 +59,16 @@ func TestTelegramMarkdownV2PreservesMarkdownLinks(t *testing.T) {
 	}
 }
 
+func TestTelegramMarkdownV2UsesNBSPBeforeLinkAfterColon(t *testing.T) {
+	text := "- Local: [http://localhost:4173/artifacts/](http://localhost:4173/artifacts/)"
+	formatted := markdownV2(text)
+
+	expected := "• Local:\u00a0[http://localhost:4173/artifacts/](http://localhost:4173/artifacts/)"
+	if formatted != expected {
+		t.Fatalf("unexpected formatted markdown:\nwant: %q\ngot:  %q", expected, formatted)
+	}
+}
+
 func TestTelegramMarkdownV2FormatsLists(t *testing.T) {
 	text := "- first item\n* second item\n1. step one\n2) step two"
 	formatted := markdownV2(text)
