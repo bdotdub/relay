@@ -111,6 +111,8 @@ func (a *relayApp) handleUpdate(ctx context.Context, update telegram.Update) err
 	if text == "" {
 		text = message.Caption
 	}
+	codexText := contextualizeReplyToMessage(text, len(imagePaths) > 0, message.ReplyToMessage)
+
 	if strings.TrimSpace(text) == "" && len(imagePaths) == 0 {
 		return a.telegram.SendMessage(ctx, message.Chat.ID, "Only text and photo messages are supported right now.")
 	}
@@ -119,7 +121,8 @@ func (a *relayApp) handleUpdate(ctx context.Context, update telegram.Update) err
 	logx.Debug("dispatching message to chat worker", "chat_id", message.Chat.ID, "command", len(text) > 0 && text[0] == '/')
 	event := chatEvent{
 		messageID:  message.MessageID,
-		text:       text,
+		rawText:    text,
+		text:       codexText,
 		imagePaths: imagePaths,
 		isCommand:  len(text) > 0 && text[0] == '/',
 	}
@@ -251,8 +254,8 @@ func (w *chatWorker) notifyQueueOverflow() {
 
 func (w *chatWorker) handleEvent(ctx context.Context, event chatEvent, active *activeChatTurn) (*activeChatTurn, bool) {
 	if event.isCommand {
-		logx.Debug("chat worker handling command", "chat_id", w.chatID, "message_id", event.messageID, "command", firstCommandToken(event.text))
-		if err := w.handleCommand(ctx, event.messageID, event.text); err != nil {
+		logx.Debug("chat worker handling command", "chat_id", w.chatID, "message_id", event.messageID, "command", firstCommandToken(event.rawText))
+		if err := w.handleCommand(ctx, event.messageID, event.rawText); err != nil {
 			w.sendError(ctx, event.messageID, err)
 		}
 		return active, false
@@ -485,6 +488,56 @@ func cloneTurnReplayInputs(inputs []turnReplayInput) []turnReplayInput {
 		cloned = append(cloned, newTurnReplayInput(input.text, input.imagePaths))
 	}
 	return cloned
+}
+
+func contextualizeReplyToMessage(text string, hasImages bool, repliedTo *telegram.Message) string {
+	if repliedTo == nil {
+		return text
+	}
+
+	repliedText := describeTelegramMessageForReplyContext(repliedTo)
+
+	var builder strings.Builder
+	builder.WriteString("The user is replying to a specific earlier Telegram message.\n")
+	if repliedText != "" {
+		builder.WriteString("\nReplied-to message:\n")
+		builder.WriteString(repliedText)
+		builder.WriteString("\n")
+	}
+	builder.WriteString("\nLatest user message:\n")
+	if strings.TrimSpace(text) != "" {
+		builder.WriteString(text)
+		builder.WriteString("\n")
+	} else {
+		builder.WriteString("(no text)\n")
+	}
+	if hasImages {
+		builder.WriteString("\nThe latest user message also includes one or more attached images.\n")
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func describeTelegramMessageForReplyContext(message *telegram.Message) string {
+	if message == nil {
+		return ""
+	}
+
+	content := strings.TrimSpace(message.Text)
+	if content == "" {
+		content = strings.TrimSpace(message.Caption)
+	}
+
+	var builder strings.Builder
+	switch {
+	case content != "":
+		builder.WriteString(content)
+	default:
+		builder.WriteString("(message had no text)")
+	}
+	if len(message.Photo) > 0 {
+		builder.WriteString("\n\nThe replied-to message also included one or more attached images.")
+	}
+	return strings.TrimSpace(builder.String())
 }
 
 func (a *relayApp) isChatAllowed(chatID int64) bool {

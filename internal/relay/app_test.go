@@ -82,6 +82,100 @@ func TestSameChatSteersActiveTurn(t *testing.T) {
 	}
 }
 
+func TestReplyContextPassedToCodexOnStartTurn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 10,
+		Message: &telegramMessage{
+			MessageID: 110,
+			Chat:      privateChat(7),
+			Text:      "Do that version",
+			ReplyToMessage: &telegramMessage{
+				MessageID: 109,
+				Text:      "Please refactor the parser and keep tests green.",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("handle update: %v", err)
+	}
+
+	waitFor(t, "reply-context turn start", func() bool {
+		return codex.startCount() == 1
+	})
+
+	call := codex.startCallsSnapshot()[0]
+	if !stringsContains(call.text, "The user is replying to a specific earlier Telegram message.") {
+		t.Fatalf("expected reply context preamble, got %q", call.text)
+	}
+	if !stringsContains(call.text, "Replied-to message:\nPlease refactor the parser and keep tests green.") {
+		t.Fatalf("expected replied-to message text, got %q", call.text)
+	}
+	if !stringsContains(call.text, "Latest user message:\nDo that version") {
+		t.Fatalf("expected latest user text in contextualized prompt, got %q", call.text)
+	}
+}
+
+func TestReplyContextPassedToCodexOnSteerTurn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 11,
+		Message: &telegramMessage{
+			MessageID: 111,
+			Chat:      privateChat(7),
+			Text:      "Initial request",
+		},
+	}); err != nil {
+		t.Fatalf("handle first update: %v", err)
+	}
+	waitFor(t, "initial start", func() bool {
+		return codex.startCount() == 1
+	})
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 12,
+		Message: &telegramMessage{
+			MessageID: 112,
+			Chat:      privateChat(7),
+			Text:      "Use this one instead",
+			ReplyToMessage: &telegramMessage{
+				MessageID: 111,
+				Text:      "Initial request",
+				Photo: []telegrampkg.PhotoSize{
+					{FileID: "reply-photo", Width: 200, Height: 200},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("handle second update: %v", err)
+	}
+	waitFor(t, "reply-context steer", func() bool {
+		return codex.steerCount() == 1
+	})
+
+	call := codex.steerCallsSnapshot()[0]
+	if !stringsContains(call.text, "Replied-to message:\nInitial request") {
+		t.Fatalf("expected replied-to steer text, got %q", call.text)
+	}
+	if !stringsContains(call.text, "The replied-to message also included one or more attached images.") {
+		t.Fatalf("expected replied-to image note, got %q", call.text)
+	}
+	if !stringsContains(call.text, "Latest user message:\nUse this one instead") {
+		t.Fatalf("expected latest steer text, got %q", call.text)
+	}
+}
+
 func TestContextWindowExceededCompactsAndRetriesTurn(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

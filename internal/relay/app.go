@@ -40,6 +40,7 @@ type chatWorker struct {
 
 type chatEvent struct {
 	messageID  int64
+	rawText    string
 	text       string
 	imagePaths []string
 	isCommand  bool

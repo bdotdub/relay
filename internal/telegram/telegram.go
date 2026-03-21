@@ -50,11 +50,12 @@ type PhotoSize struct {
 }
 
 type Message struct {
-	MessageID int64       `json:"message_id"`
-	Chat      Chat        `json:"chat"`
-	Text      string      `json:"text"`
-	Caption   string      `json:"caption"`
-	Photo     []PhotoSize `json:"photo"`
+	MessageID      int64       `json:"message_id"`
+	Chat           Chat        `json:"chat"`
+	Text           string      `json:"text"`
+	Caption        string      `json:"caption"`
+	Photo          []PhotoSize `json:"photo"`
+	ReplyToMessage *Message    `json:"reply_to_message,omitempty"`
 }
 
 type Chat struct {
