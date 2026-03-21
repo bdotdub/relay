@@ -34,9 +34,9 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 		if !w.app.cfg.CodexStartAppServer {
 			mode = "websocket"
 		}
-		return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Transport: %s\nExecution: %s\nFast mode: %s\nModel: %s\nThread: %s\nCWD: %s\nTokens: %s", mode, w.app.executionProfileSummary(w.chatID), enabledDisabled(w.app.fastModeForChat(w.chatID)), w.app.modelSummaryForChat(w.chatID), threadID, w.app.cfg.CodexCWD, formatTokenUsage(w.app.lastUsageForChat(w.chatID))))
+		return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Transport: %s\nExecution: %s\nFast mode: %s\nModel: %s\nReasoning: %s\nThread: %s\nCWD: %s\nTokens: %s", mode, w.app.executionProfileSummary(w.chatID), enabledDisabled(w.app.fastModeForChat(w.chatID)), w.app.modelSummaryForChat(w.chatID), w.app.reasoningEffortSummaryForChat(w.chatID), threadID, w.app.cfg.CodexCWD, formatTokenUsage(w.app.lastUsageForChat(w.chatID))))
 	case "/help":
-		return w.app.telegram.SendMessage(ctx, w.chatID, "Send any text message to relay it to Codex.\n/new or /reset starts a fresh Codex thread.\n/status shows the current thread mapping, execution mode, fast-mode state, model, and last token usage.\n/verbose toggles intermediate visible output for this chat.\n/yolo toggles YOLO execution mode for this chat and starts a fresh thread.\n/fast toggles fast mode for this chat and starts a fresh thread.\n/model sets a per-chat model override and starts a fresh thread.\n/reload replaces the running relay process with the current binary.")
+		return w.app.telegram.SendMessage(ctx, w.chatID, "Send any text message to relay it to Codex.\n/new or /reset starts a fresh Codex thread.\n/status shows the current thread mapping, execution mode, fast-mode state, model, reasoning effort, and last token usage.\n/verbose toggles intermediate visible output for this chat.\n/yolo toggles YOLO execution mode for this chat and starts a fresh thread.\n/fast toggles fast mode for this chat and starts a fresh thread.\n/model sets a per-chat model override and starts a fresh thread.\n/reasoning sets a per-chat reasoning effort override and starts a fresh thread. Choices: none, minimal, low, medium, high, xhigh.\n/reload replaces the running relay process with the current binary.")
 	case "/reload":
 		if err := w.app.telegram.SendMessage(ctx, w.chatID, "Reloading the relay process from the current binary. Active turns will be interrupted."); err != nil {
 			return err
@@ -112,6 +112,25 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 			return err
 		}
 		return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Model set to %s for this chat. Started a fresh Codex thread.\nthread_id=%s", model, threadID))
+	case "/reasoning":
+		effort, changed, message := w.app.setReasoningEffortForChat(w.chatID, text)
+		if message != "" {
+			return w.app.telegram.SendMessage(ctx, w.chatID, message)
+		}
+		if !changed {
+			return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Reasoning is already %s for this chat.", w.app.reasoningEffortSummaryForChat(w.chatID)))
+		}
+		threadID, err := w.app.codex.NewThread(ctx, w.app.threadOptionsForChat(w.chatID))
+		if err != nil {
+			return err
+		}
+		if err := w.app.resetContinuityForChat(w.chatID); err != nil {
+			return err
+		}
+		if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {
+			return err
+		}
+		return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Reasoning set to %s for this chat. Started a fresh Codex thread.\nthread_id=%s", effort, threadID))
 	default:
 		return w.app.telegram.SendMessage(ctx, w.chatID, "Unknown command. Use /help for the supported commands.")
 	}
@@ -121,6 +140,10 @@ func (a *relayApp) threadOptionsForChat(chatID int64) codex.ThreadOptions {
 	options := codex.ThreadOptions{
 		Yolo:  a.yoloForChat(chatID),
 		Model: a.modelForChat(chatID),
+	}
+	if effort := a.reasoningEffortOverrideForChat(chatID); strings.TrimSpace(effort) != "" {
+		options.ReasoningEffortSet = true
+		options.ReasoningEffort = effort
 	}
 	if tier, ok := a.serviceTierOverrideForChat(chatID); ok {
 		options.ServiceTierSet = true

@@ -78,6 +78,7 @@ func (a *relayApp) registerMyCommands(ctx context.Context) error {
 		{Command: "yolo", Description: "toggle YOLO execution mode"},
 		{Command: "fast", Description: "toggle fast mode"},
 		{Command: "model", Description: "set model override for this chat"},
+		{Command: "reasoning", Description: "set reasoning effort for this chat"},
 		{Command: "reload", Description: "reload the running relay process"},
 	})
 }

@@ -119,6 +119,24 @@ func TestBaseThreadParamsUsesPerThreadModelOverride(t *testing.T) {
 	}
 }
 
+func TestBaseThreadParamsUsesPerThreadReasoningEffortOverride(t *testing.T) {
+	client := &Client{
+		cfg: config.Config{
+			CodexCWD: "/tmp/project",
+		},
+	}
+
+	params := client.baseThreadParams(ThreadOptions{ReasoningEffortSet: true, ReasoningEffort: "high"})
+	if got := params["reasoningEffort"]; got != "high" {
+		t.Fatalf("unexpected reasoning effort: %#v", got)
+	}
+
+	params = client.baseThreadParams(ThreadOptions{ReasoningEffortSet: true, ReasoningEffort: ""})
+	if _, ok := params["reasoningEffort"]; ok {
+		t.Fatalf("did not expect reasoning effort when override clears it: %#v", params["reasoningEffort"])
+	}
+}
+
 func TestBaseThreadParamsUsesPerThreadServiceTierOverride(t *testing.T) {
 	client := &Client{
 		cfg: config.Config{

@@ -23,10 +23,12 @@ type Service interface {
 }
 
 type ThreadOptions struct {
-	Yolo           bool
-	Model          string
-	ServiceTier    string
-	ServiceTierSet bool
+	Yolo               bool
+	Model              string
+	ReasoningEffort    string
+	ReasoningEffortSet bool
+	ServiceTier        string
+	ServiceTierSet     bool
 }
 
 type Client struct {
@@ -178,7 +180,7 @@ type protocolUsage struct {
 	TotalTokensSnake *int64 `json:"total_tokens,omitempty"`
 }
 
-const relayDeveloperInstructions = "This Codex session is relayed through Telegram, and the user interacts with it there. Telegram messages are rendered with MarkdownV2. Use Telegram emphasis syntax, not CommonMark: write bold as *bold* and italic as _italic_, not **bold** or *italic*. When you include a link, prefer the Markdown link form \"[label](url)\" so it renders correctly in Telegram. Do not include local filesystem paths unless they are truly necessary, because the user is interacting through Telegram rather than a shared local workspace.\n\nKnown Telegram slash commands: /help, /status, /new, /reset, /verbose, /yolo, /fast, /model, /reload."
+const relayDeveloperInstructions = "This Codex session is relayed through Telegram, and the user interacts with it there. Telegram messages are rendered with MarkdownV2. Use Telegram emphasis syntax, not CommonMark: write bold as *bold* and italic as _italic_, not **bold** or *italic*. When you include a link, prefer the Markdown link form \"[label](url)\" so it renders correctly in Telegram. Do not include local filesystem paths unless they are truly necessary, because the user is interacting through Telegram rather than a shared local workspace.\n\nKnown Telegram slash commands: /help, /status, /new, /reset, /verbose, /yolo, /fast, /model, /reasoning, /reload."
 
 func NewClient(ctx context.Context, cfg config.Config) (*Client, error) {
 	var rpc *jsonrpc.Client
@@ -643,6 +645,7 @@ func (c *Client) baseThreadParams(options ThreadOptions) map[string]any {
 		insertOptionalString(params, "sandbox", c.cfg.CodexSandbox)
 	}
 	insertOptionalString(params, "model", c.modelForOptions(options))
+	insertOptionalString(params, "reasoningEffort", c.reasoningEffortForOptions(options))
 	insertOptionalString(params, "personality", c.cfg.CodexPersonality)
 	insertOptionalString(params, "serviceTier", c.serviceTierForOptions(options))
 	insertOptionalString(params, "baseInstructions", c.cfg.CodexBaseInstructions)
@@ -674,6 +677,13 @@ func (c *Client) serviceTierForOptions(options ThreadOptions) string {
 		return strings.TrimSpace(options.ServiceTier)
 	}
 	return strings.TrimSpace(c.cfg.CodexServiceTier)
+}
+
+func (c *Client) reasoningEffortForOptions(options ThreadOptions) string {
+	if options.ReasoningEffortSet {
+		return strings.TrimSpace(options.ReasoningEffort)
+	}
+	return ""
 }
 
 func (c *Client) newThreadParams(options ThreadOptions) map[string]any {

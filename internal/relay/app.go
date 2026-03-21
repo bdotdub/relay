@@ -17,14 +17,15 @@ type relayApp struct {
 	reload   func() error
 	sleep    func(context.Context, time.Duration) error
 
-	stateMu           sync.RWMutex
-	threadIDsByChat   map[string]string
-	verboseByChat     map[int64]bool
-	yoloByChat        map[int64]bool
-	serviceTierByChat map[int64]string
-	modelByChat       map[int64]string
-	continuityByChat  map[int64]chatContinuityState
-	lastUsageByChat   map[int64]codex.TokenUsage
+	stateMu               sync.RWMutex
+	threadIDsByChat       map[string]string
+	verboseByChat         map[int64]bool
+	yoloByChat            map[int64]bool
+	serviceTierByChat     map[int64]string
+	modelByChat           map[int64]string
+	reasoningEffortByChat map[int64]string
+	continuityByChat      map[int64]chatContinuityState
+	lastUsageByChat       map[int64]codex.TokenUsage
 
 	workersMu sync.Mutex
 	workers   map[int64]*chatWorker
@@ -81,12 +82,13 @@ type chatContinuityState struct {
 }
 
 type relayState struct {
-	Threads           map[string]string              `json:"threads,omitempty"`
-	VerboseByChat     map[string]bool                `json:"verbose_by_chat,omitempty"`
-	YoloByChat        map[string]bool                `json:"yolo_by_chat,omitempty"`
-	ServiceTierByChat map[string]string              `json:"service_tier_by_chat,omitempty"`
-	ModelByChat       map[string]string              `json:"model_by_chat,omitempty"`
-	ContinuityByChat  map[string]chatContinuityState `json:"continuity_by_chat,omitempty"`
+	Threads               map[string]string              `json:"threads,omitempty"`
+	VerboseByChat         map[string]bool                `json:"verbose_by_chat,omitempty"`
+	YoloByChat            map[string]bool                `json:"yolo_by_chat,omitempty"`
+	ServiceTierByChat     map[string]string              `json:"service_tier_by_chat,omitempty"`
+	ModelByChat           map[string]string              `json:"model_by_chat,omitempty"`
+	ReasoningEffortByChat map[string]string              `json:"reasoning_effort_by_chat,omitempty"`
+	ContinuityByChat      map[string]chatContinuityState `json:"continuity_by_chat,omitempty"`
 }
 
 func Run(ctx context.Context, cfg config.Config) error {
@@ -108,18 +110,19 @@ func newRelayApp(ctx context.Context, cfg config.Config) (*relayApp, error) {
 
 func newRelayAppWithServices(cfg config.Config, telegramSvc telegram.Service, codexSvc codex.Service) *relayApp {
 	return &relayApp{
-		cfg:               cfg,
-		telegram:          telegramSvc,
-		codex:             codexSvc,
-		reload:            reloadCurrentProcess,
-		sleep:             sleepContext,
-		threadIDsByChat:   map[string]string{},
-		verboseByChat:     map[int64]bool{},
-		yoloByChat:        map[int64]bool{},
-		serviceTierByChat: map[int64]string{},
-		modelByChat:       map[int64]string{},
-		continuityByChat:  map[int64]chatContinuityState{},
-		lastUsageByChat:   map[int64]codex.TokenUsage{},
-		workers:           map[int64]*chatWorker{},
+		cfg:                   cfg,
+		telegram:              telegramSvc,
+		codex:                 codexSvc,
+		reload:                reloadCurrentProcess,
+		sleep:                 sleepContext,
+		threadIDsByChat:       map[string]string{},
+		verboseByChat:         map[int64]bool{},
+		yoloByChat:            map[int64]bool{},
+		serviceTierByChat:     map[int64]string{},
+		modelByChat:           map[int64]string{},
+		reasoningEffortByChat: map[int64]string{},
+		continuityByChat:      map[int64]chatContinuityState{},
+		lastUsageByChat:       map[int64]codex.TokenUsage{},
+		workers:               map[int64]*chatWorker{},
 	}
 }

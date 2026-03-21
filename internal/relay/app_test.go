@@ -601,6 +601,9 @@ func TestStatusShowsLastTokenUsage(t *testing.T) {
 	if !stringsContains(reply, "Model: gpt-5.4 (default)") {
 		t.Fatalf("status reply missing default model: %q", reply)
 	}
+	if !stringsContains(reply, "Reasoning: default (model default)") {
+		t.Fatalf("status reply missing reasoning summary: %q", reply)
+	}
 }
 
 func TestYoloCommandStartsFreshThreadAndUpdatesStatus(t *testing.T) {
@@ -821,6 +824,107 @@ func TestModelDefaultClearsOverride(t *testing.T) {
 	}
 	if app.modelOverrideForChat(35) != "" {
 		t.Fatalf("expected model override to be cleared, got %q", app.modelOverrideForChat(35))
+	}
+}
+
+func TestReasoningCommandStartsFreshThreadAndUpdatesStatus(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 1,
+		Message: &telegramMessage{
+			MessageID: 558,
+			Chat:      privateChat(34),
+			Text:      "/reasoning high",
+		},
+	}); err != nil {
+		t.Fatalf("handle reasoning command: %v", err)
+	}
+
+	waitFor(t, "reasoning ack", func() bool {
+		return telegram.messageCount() == 1
+	})
+
+	reply := telegram.messages()[0].text
+	if !stringsContains(reply, "Reasoning set to high") || !stringsContains(reply, "thread_id=new-thread-1") {
+		t.Fatalf("unexpected reasoning ack: %q", reply)
+	}
+
+	newCalls := codex.newThreadCallsSnapshot()
+	if len(newCalls) != 1 || !newCalls[0].options.ReasoningEffortSet || newCalls[0].options.ReasoningEffort != "high" {
+		t.Fatalf("expected reasoning override new thread call, got %#v", newCalls)
+	}
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 2,
+		Message: &telegramMessage{
+			MessageID: 559,
+			Chat:      privateChat(34),
+			Text:      "/status",
+		},
+	}); err != nil {
+		t.Fatalf("handle status command: %v", err)
+	}
+
+	waitFor(t, "reasoning status reply", func() bool {
+		return telegram.messageCount() == 2
+	})
+
+	status := telegram.messages()[1].text
+	if !stringsContains(status, "Reasoning: high (override)") {
+		t.Fatalf("status reply missing reasoning override: %q", status)
+	}
+}
+
+func TestReasoningDefaultClearsOverride(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+
+	for _, update := range []telegramUpdate{
+		{
+			UpdateID: 1,
+			Message: &telegramMessage{
+				MessageID: 568,
+				Chat:      privateChat(35),
+				Text:      "/reasoning high",
+			},
+		},
+		{
+			UpdateID: 2,
+			Message: &telegramMessage{
+				MessageID: 569,
+				Chat:      privateChat(35),
+				Text:      "/reasoning default",
+			},
+		},
+	} {
+		if err := app.handleUpdate(ctx, update); err != nil {
+			t.Fatalf("handle update %d: %v", update.UpdateID, err)
+		}
+	}
+
+	waitFor(t, "reasoning reset ack", func() bool {
+		return telegram.messageCount() == 2
+	})
+
+	newCalls := codex.newThreadCallsSnapshot()
+	if len(newCalls) != 2 {
+		t.Fatalf("expected two fresh threads, got %#v", newCalls)
+	}
+	if newCalls[1].options.ReasoningEffortSet || newCalls[1].options.ReasoningEffort != "" {
+		t.Fatalf("expected reset to clear reasoning override, got %#v", newCalls[1])
+	}
+	if app.reasoningEffortOverrideForChat(35) != "" {
+		t.Fatalf("expected reasoning override to be cleared, got %q", app.reasoningEffortOverrideForChat(35))
 	}
 }
 

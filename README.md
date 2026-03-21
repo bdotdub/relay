@@ -39,7 +39,7 @@ Otherwise it launches Codex locally over stdio by default.
 The following commands are registered automatically and available in Telegram’s command UI:
 
 - `/help`: show supported commands
-- `/status`: show transport, mode, model, thread id, working directory, token usage
+- `/status`: show transport, mode, model, reasoning effort, thread id, working directory, token usage
 - `/new`: start a fresh thread for this chat
 - `/reset`: same as `/new`
 - `/verbose` / `/verbose on|off|status`: toggle or inspect visible intermediate output
@@ -48,6 +48,9 @@ The following commands are registered automatically and available in Telegram’
 - `/model`: show current chat model
 - `/model <name>`: set chat model override and start a fresh thread
 - `/model default`: clear model override and use default
+- `/reasoning`: show current chat reasoning effort and supported values
+- `/reasoning <level>`: set chat reasoning effort override and start a fresh thread
+- `/reasoning default`: clear reasoning effort override and use the model default
 - `/reload`: replace the running relay process with the current binary; active turns are interrupted
 
 Any other plain-text message is forwarded directly to Codex.
