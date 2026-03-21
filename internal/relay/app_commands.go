@@ -18,6 +18,9 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 		if err != nil {
 			return err
 		}
+		if err := w.app.resetContinuityForChat(w.chatID); err != nil {
+			return err
+		}
 		if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {
 			return err
 		}
@@ -64,6 +67,9 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 		if err != nil {
 			return err
 		}
+		if err := w.app.resetContinuityForChat(w.chatID); err != nil {
+			return err
+		}
 		if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {
 			return err
 		}
@@ -80,6 +86,9 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 		if err != nil {
 			return err
 		}
+		if err := w.app.resetContinuityForChat(w.chatID); err != nil {
+			return err
+		}
 		if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {
 			return err
 		}
@@ -94,6 +103,9 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 		}
 		threadID, err := w.app.codex.NewThread(ctx, w.app.threadOptionsForChat(w.chatID))
 		if err != nil {
+			return err
+		}
+		if err := w.app.resetContinuityForChat(w.chatID); err != nil {
 			return err
 		}
 		if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {

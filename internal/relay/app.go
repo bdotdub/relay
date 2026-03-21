@@ -22,6 +22,7 @@ type relayApp struct {
 	yoloByChat        map[int64]bool
 	serviceTierByChat map[int64]string
 	modelByChat       map[int64]string
+	continuityByChat  map[int64]chatContinuityState
 	lastUsageByChat   map[int64]codex.TokenUsage
 
 	workersMu sync.Mutex
@@ -52,14 +53,38 @@ type activeChatTurn struct {
 	resultCh       <-chan codex.TurnResult
 	stopTyping     func()
 	tmpFiles       []string // temp image files to remove after the turn
+	inputs         []turnReplayInput
+	retryCount     int
+}
+
+type turnReplayInput struct {
+	text       string
+	imagePaths []string
+}
+
+type relayMessageSnapshot struct {
+	Role      string `json:"role,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
+}
+
+type pendingTurnSnapshot struct {
+	StartedAt       string `json:"started_at,omitempty"`
+	LastUserMessage string `json:"last_user_message,omitempty"`
+}
+
+type chatContinuityState struct {
+	RecentMessages []relayMessageSnapshot `json:"recent_messages,omitempty"`
+	PendingTurn    *pendingTurnSnapshot   `json:"pending_turn,omitempty"`
 }
 
 type relayState struct {
-	Threads           map[string]string `json:"threads,omitempty"`
-	VerboseByChat     map[string]bool   `json:"verbose_by_chat,omitempty"`
-	YoloByChat        map[string]bool   `json:"yolo_by_chat,omitempty"`
-	ServiceTierByChat map[string]string `json:"service_tier_by_chat,omitempty"`
-	ModelByChat       map[string]string `json:"model_by_chat,omitempty"`
+	Threads           map[string]string              `json:"threads,omitempty"`
+	VerboseByChat     map[string]bool                `json:"verbose_by_chat,omitempty"`
+	YoloByChat        map[string]bool                `json:"yolo_by_chat,omitempty"`
+	ServiceTierByChat map[string]string              `json:"service_tier_by_chat,omitempty"`
+	ModelByChat       map[string]string              `json:"model_by_chat,omitempty"`
+	ContinuityByChat  map[string]chatContinuityState `json:"continuity_by_chat,omitempty"`
 }
 
 func Run(ctx context.Context, cfg config.Config) error {
@@ -90,6 +115,7 @@ func newRelayAppWithServices(cfg config.Config, telegramSvc telegram.Service, co
 		yoloByChat:        map[int64]bool{},
 		serviceTierByChat: map[int64]string{},
 		modelByChat:       map[int64]string{},
+		continuityByChat:  map[int64]chatContinuityState{},
 		lastUsageByChat:   map[int64]codex.TokenUsage{},
 		workers:           map[int64]*chatWorker{},
 	}

@@ -82,6 +82,177 @@ func TestSameChatSteersActiveTurn(t *testing.T) {
 	}
 }
 
+func TestContextWindowExceededCompactsAndRetriesTurn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 3,
+		Message: &telegramMessage{
+			MessageID: 103,
+			Chat:      privateChat(7),
+			Text:      "Recover this request",
+		},
+	}); err != nil {
+		t.Fatalf("handle update: %v", err)
+	}
+
+	waitFor(t, "initial turn start", func() bool {
+		return codex.startCount() == 1
+	})
+
+	codex.finishTurn("thread-1", turnResult{
+		ErrorMessage: "context window exceeded",
+		ErrorCode:    codexpkg.TurnErrorCodeContextWindowExceeded,
+	})
+
+	waitFor(t, "compaction retry", func() bool {
+		return codex.startCount() == 2
+	})
+
+	compactCalls := codex.compactCallsSnapshot()
+	if len(compactCalls) != 1 || compactCalls[0] != "thread-1" {
+		t.Fatalf("unexpected compact calls: %#v", compactCalls)
+	}
+
+	codex.finishTurn("thread-1", turnResult{Text: "Recovered answer"})
+
+	waitFor(t, "telegram reply after retry", func() bool {
+		return telegram.messageCount() == 1
+	})
+
+	message := telegram.messages()[0]
+	if message.text != "Recovered answer" {
+		t.Fatalf("unexpected reply text after retry: %q", message.text)
+	}
+}
+
+func TestContextWindowExceededReplaysSteeredInputsAfterCompaction(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 4,
+		Message: &telegramMessage{
+			MessageID: 104,
+			Chat:      privateChat(7),
+			Text:      "First request",
+		},
+	}); err != nil {
+		t.Fatalf("handle first update: %v", err)
+	}
+	waitFor(t, "first turn start", func() bool {
+		return codex.startCount() == 1
+	})
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 5,
+		Message: &telegramMessage{
+			MessageID: 105,
+			Chat:      privateChat(7),
+			Text:      "Second request",
+		},
+	}); err != nil {
+		t.Fatalf("handle second update: %v", err)
+	}
+	waitFor(t, "initial steer", func() bool {
+		return codex.steerCount() == 1
+	})
+
+	codex.finishTurn("thread-1", turnResult{
+		ErrorMessage: "context window exceeded",
+		ErrorCode:    codexpkg.TurnErrorCodeContextWindowExceeded,
+	})
+
+	waitFor(t, "retry start and steer", func() bool {
+		return codex.startCount() == 2 && codex.steerCount() == 2
+	})
+
+	startCalls := codex.startCallsSnapshot()
+	if len(startCalls) != 2 {
+		t.Fatalf("unexpected start calls: %#v", startCalls)
+	}
+	if startCalls[1].text != "First request" {
+		t.Fatalf("expected first input to be replayed, got %q", startCalls[1].text)
+	}
+
+	steerCalls := codex.steerCallsSnapshot()
+	if len(steerCalls) != 2 {
+		t.Fatalf("unexpected steer calls: %#v", steerCalls)
+	}
+	if steerCalls[1].text != "Second request" {
+		t.Fatalf("expected second input to be replayed, got %q", steerCalls[1].text)
+	}
+
+	codex.finishTurn("thread-1", turnResult{Text: "Recovered with both inputs"})
+
+	waitFor(t, "telegram reply after replay", func() bool {
+		return telegram.messageCount() == 1
+	})
+
+	if got := telegram.messages()[0].text; got != "Recovered with both inputs" {
+		t.Fatalf("unexpected reply text: %q", got)
+	}
+}
+
+func TestContextWindowExceededRetriesOnlyOnce(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 6,
+		Message: &telegramMessage{
+			MessageID: 106,
+			Chat:      privateChat(7),
+			Text:      "Still too large",
+		},
+	}); err != nil {
+		t.Fatalf("handle update: %v", err)
+	}
+	waitFor(t, "initial turn start", func() bool {
+		return codex.startCount() == 1
+	})
+
+	codex.finishTurn("thread-1", turnResult{
+		ErrorMessage: "context window exceeded",
+		ErrorCode:    codexpkg.TurnErrorCodeContextWindowExceeded,
+	})
+	waitFor(t, "retry start", func() bool {
+		return codex.startCount() == 2
+	})
+
+	codex.finishTurn("thread-1", turnResult{
+		ErrorMessage: "context window exceeded",
+		ErrorCode:    codexpkg.TurnErrorCodeContextWindowExceeded,
+	})
+	waitFor(t, "final error reply", func() bool {
+		return telegram.messageCount() == 1
+	})
+
+	if codex.startCount() != 2 {
+		t.Fatalf("expected exactly one retry, got %d starts", codex.startCount())
+	}
+	compactCalls := codex.compactCallsSnapshot()
+	if len(compactCalls) != 1 {
+		t.Fatalf("expected exactly one compact call, got %#v", compactCalls)
+	}
+	if !stringsContains(telegram.messages()[0].text, "Codex reported an error: context window exceeded") {
+		t.Fatalf("unexpected error reply: %q", telegram.messages()[0].text)
+	}
+}
+
 func TestDifferentChatsStartDifferentTurns(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -673,6 +844,9 @@ func TestYoloModeChangesThreadOptionsForSubsequentTurns(t *testing.T) {
 	}
 
 	codex.finishTurn("new-thread-1", turnResult{Text: "Done"})
+	waitFor(t, "yolo turn completion", func() bool {
+		return telegram.messageCount() == 2
+	})
 }
 
 func TestLoadStateSupportsLegacyAndNewFormats(t *testing.T) {
@@ -694,7 +868,7 @@ func TestLoadStateSupportsLegacyAndNewFormats(t *testing.T) {
 	}
 
 	newApp := newRelayAppWithServices(cfg, &fakeTelegramService{}, newFakeCodexService())
-	newData := []byte("{\n  \"threads\": {\n    \"9\": \"thread-9\"\n  },\n  \"verbose_by_chat\": {\n    \"9\": true\n  },\n  \"yolo_by_chat\": {\n    \"9\": true\n  },\n  \"service_tier_by_chat\": {\n    \"9\": \"default\"\n  }\n}\n")
+	newData := []byte("{\n  \"threads\": {\n    \"9\": \"thread-9\"\n  },\n  \"verbose_by_chat\": {\n    \"9\": true\n  },\n  \"yolo_by_chat\": {\n    \"9\": true\n  },\n  \"service_tier_by_chat\": {\n    \"9\": \"default\"\n  },\n  \"continuity_by_chat\": {\n    \"9\": {\n      \"recent_messages\": [\n        {\n          \"role\": \"user\",\n          \"text\": \"Remember this\"\n        }\n      ],\n      \"pending_turn\": {\n        \"started_at\": \"2026-03-18T12:00:00Z\",\n        \"last_user_message\": \"Remember this\"\n      }\n    }\n  }\n}\n")
 	if err := os.WriteFile(cfg.StatePath, newData, 0o644); err != nil {
 		t.Fatalf("write new state: %v", err)
 	}
@@ -712,6 +886,13 @@ func TestLoadStateSupportsLegacyAndNewFormats(t *testing.T) {
 	}
 	if newApp.fastModeForChat(9) {
 		t.Fatal("new state should disable fast mode with default override")
+	}
+	continuity := newApp.continuityForChat(9)
+	if len(continuity.RecentMessages) != 1 || continuity.RecentMessages[0].Text != "Remember this" {
+		t.Fatalf("unexpected continuity state: %#v", continuity)
+	}
+	if continuity.PendingTurn == nil || continuity.PendingTurn.LastUserMessage != "Remember this" {
+		t.Fatalf("unexpected pending turn continuity: %#v", continuity.PendingTurn)
 	}
 
 	modelApp := newRelayAppWithServices(cfg, &fakeTelegramService{}, newFakeCodexService())
@@ -752,6 +933,161 @@ func TestVerboseModePersistsAcrossReload(t *testing.T) {
 	}
 }
 
+func TestCompletedTurnsPersistRecentContinuityAcrossReload(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := testConfig(t)
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(cfg, telegram, codex)
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 1,
+		Message: &telegramMessage{
+			MessageID: 701,
+			Chat:      privateChat(7),
+			Text:      "Remember this plan",
+		},
+	}); err != nil {
+		t.Fatalf("handle message: %v", err)
+	}
+
+	waitFor(t, "turn start", func() bool {
+		return codex.startCount() == 1
+	})
+
+	codex.finishTurn("thread-1", turnResult{Text: "Plan captured"})
+
+	waitFor(t, "telegram reply", func() bool {
+		return telegram.messageCount() == 1
+	})
+
+	reloaded := newRelayAppWithServices(cfg, &fakeTelegramService{}, newFakeCodexService())
+	if err := reloaded.loadState(); err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	continuity := reloaded.continuityForChat(7)
+	if continuity.PendingTurn != nil {
+		t.Fatalf("expected pending turn to clear after completion, got %#v", continuity.PendingTurn)
+	}
+	if len(continuity.RecentMessages) != 2 {
+		t.Fatalf("expected two recent messages, got %#v", continuity.RecentMessages)
+	}
+	if continuity.RecentMessages[0].Role != "user" || continuity.RecentMessages[0].Text != "Remember this plan" {
+		t.Fatalf("unexpected first continuity message: %#v", continuity.RecentMessages[0])
+	}
+	if continuity.RecentMessages[1].Role != "assistant" || continuity.RecentMessages[1].Text != "Plan captured" {
+		t.Fatalf("unexpected second continuity message: %#v", continuity.RecentMessages[1])
+	}
+}
+
+func TestFailedResumeBootstrapsNewThreadFromContinuity(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	codex.forceEnsureFallback("thread-7")
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+	app.threadIDsByChat["7"] = "thread-7"
+	app.continuityByChat[7] = chatContinuityState{
+		RecentMessages: []relayMessageSnapshot{
+			{Role: "user", Text: "Earlier request"},
+			{Role: "assistant", Text: "Earlier answer"},
+		},
+		PendingTurn: &pendingTurnSnapshot{
+			StartedAt:       "2026-03-18T12:00:00Z",
+			LastUserMessage: "Earlier request",
+		},
+	}
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 2,
+		Message: &telegramMessage{
+			MessageID: 702,
+			Chat:      privateChat(7),
+			Text:      "Continue from there",
+		},
+	}); err != nil {
+		t.Fatalf("handle message: %v", err)
+	}
+
+	waitFor(t, "fallback turn start", func() bool {
+		return codex.startCount() == 1
+	})
+
+	startCalls := codex.startCallsSnapshot()
+	if len(startCalls) != 1 {
+		t.Fatalf("unexpected start calls: %#v", startCalls)
+	}
+	if startCalls[0].threadID != "new-thread-1" {
+		t.Fatalf("expected fallback to new thread, got %#v", startCalls[0])
+	}
+	if !stringsContains(startCalls[0].text, "could not be resumed") {
+		t.Fatalf("expected fallback bootstrap note, got %q", startCalls[0].text)
+	}
+	if !stringsContains(startCalls[0].text, "User: Earlier request") || !stringsContains(startCalls[0].text, "Assistant: Earlier answer") {
+		t.Fatalf("expected recent continuity in fallback bootstrap, got %q", startCalls[0].text)
+	}
+	if !stringsContains(startCalls[0].text, "Latest user text:\nContinue from there") {
+		t.Fatalf("expected latest user text in fallback bootstrap, got %q", startCalls[0].text)
+	}
+	if got := app.threadIDForChat(7); got != "new-thread-1" {
+		t.Fatalf("expected saved thread to update after fallback, got %q", got)
+	}
+}
+
+func TestNewCommandClearsContinuity(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := testConfig(t)
+	telegram := &fakeTelegramService{}
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(cfg, telegram, codex)
+	app.continuityByChat[7] = chatContinuityState{
+		RecentMessages: []relayMessageSnapshot{
+			{Role: "user", Text: "Keep me?"},
+		},
+		PendingTurn: &pendingTurnSnapshot{
+			StartedAt:       "2026-03-18T12:00:00Z",
+			LastUserMessage: "Keep me?",
+		},
+	}
+
+	if err := app.handleUpdate(ctx, telegramUpdate{
+		UpdateID: 3,
+		Message: &telegramMessage{
+			MessageID: 703,
+			Chat:      privateChat(7),
+			Text:      "/new",
+		},
+	}); err != nil {
+		t.Fatalf("handle command: %v", err)
+	}
+
+	waitFor(t, "continuity cleared", func() bool {
+		continuity := app.continuityForChat(7)
+		return len(continuity.RecentMessages) == 0 && continuity.PendingTurn == nil
+	})
+
+	continuity := app.continuityForChat(7)
+	if len(continuity.RecentMessages) != 0 || continuity.PendingTurn != nil {
+		t.Fatalf("expected /new to clear continuity, got %#v", continuity)
+	}
+
+	reloaded := newRelayAppWithServices(cfg, &fakeTelegramService{}, newFakeCodexService())
+	if err := reloaded.loadState(); err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	reloadedContinuity := reloaded.continuityForChat(7)
+	if len(reloadedContinuity.RecentMessages) != 0 || reloadedContinuity.PendingTurn != nil {
+		t.Fatalf("expected cleared continuity after reload, got %#v", reloadedContinuity)
+	}
+}
+
 func TestActiveTurnSendsTypingAction(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -781,6 +1117,9 @@ func TestActiveTurnSendsTypingAction(t *testing.T) {
 	}
 
 	codex.finishTurn("thread-1", turnResult{Text: "Done"})
+	waitFor(t, "typing turn completion", func() bool {
+		return telegram.messageCount() == 1
+	})
 }
 
 func TestNonPrivateChatsAreIgnored(t *testing.T) {
@@ -1095,8 +1434,10 @@ type fakeCodexService struct {
 	events            map[string]chan turnStreamEvent
 	newThreadCalls    []fakeThreadCall
 	ensureThreadCalls []fakeThreadCall
+	compactCalls      []string
 	startCalls        []fakeStartCall
 	steerCalls        []fakeSteerCall
+	ensureFallbackFor map[string]bool
 	nextThread        int
 }
 
@@ -1120,8 +1461,9 @@ type fakeSteerCall struct {
 
 func newFakeCodexService() *fakeCodexService {
 	return &fakeCodexService{
-		turns:  make(map[string]chan turnResult),
-		events: make(map[string]chan turnStreamEvent),
+		turns:             make(map[string]chan turnResult),
+		events:            make(map[string]chan turnStreamEvent),
+		ensureFallbackFor: make(map[string]bool),
 	}
 }
 
@@ -1148,6 +1490,16 @@ func (f *fakeCodexService) EnsureThread(ctx context.Context, threadID string, op
 			threadID: threadID,
 			options:  options,
 		})
+		if f.ensureFallbackFor[threadID] {
+			f.nextThread++
+			threadID = fmt.Sprintf("new-thread-%d", f.nextThread)
+			f.newThreadCalls = append(f.newThreadCalls, fakeThreadCall{
+				threadID: threadID,
+				options:  options,
+			})
+			f.mu.Unlock()
+			return threadID, nil
+		}
 		f.mu.Unlock()
 		return threadID, nil
 	}
@@ -1160,6 +1512,13 @@ func (f *fakeCodexService) EnsureThread(ctx context.Context, threadID string, op
 		options:  options,
 	})
 	return threadID, nil
+}
+
+func (f *fakeCodexService) CompactThread(ctx context.Context, threadID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.compactCalls = append(f.compactCalls, threadID)
+	return nil
 }
 
 func (f *fakeCodexService) StartTurn(ctx context.Context, threadID string, userText string, imagePaths []string) (*codexTurnHandle, error) {
@@ -1240,12 +1599,34 @@ func (f *fakeCodexService) ensureThreadCallsSnapshot() []fakeThreadCall {
 	return out
 }
 
+func (f *fakeCodexService) compactCallsSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.compactCalls))
+	copy(out, f.compactCalls)
+	return out
+}
+
 func (f *fakeCodexService) startCallsSnapshot() []fakeStartCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]fakeStartCall, len(f.startCalls))
 	copy(out, f.startCalls)
 	return out
+}
+
+func (f *fakeCodexService) steerCallsSnapshot() []fakeSteerCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]fakeSteerCall, len(f.steerCalls))
+	copy(out, f.steerCalls)
+	return out
+}
+
+func (f *fakeCodexService) forceEnsureFallback(threadID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensureFallbackFor[threadID] = true
 }
 
 func testConfig(t *testing.T) configpkg.Config {

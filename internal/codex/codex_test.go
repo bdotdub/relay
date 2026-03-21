@@ -13,11 +13,9 @@ func TestExtractTokenUsageFromTurnUsage(t *testing.T) {
 	total := int64(18)
 	usage := extractTokenUsage(usageCarrier{
 		Turn: &struct {
-			Status string `json:"status"`
-			Error  *struct {
-				Message string `json:"message"`
-			} `json:"error,omitempty"`
-			Usage *protocolUsage `json:"usage,omitempty"`
+			Status string             `json:"status"`
+			Error  *protocolTurnError `json:"error,omitempty"`
+			Usage  *protocolUsage     `json:"usage,omitempty"`
 		}{
 			Usage: &protocolUsage{
 				InputTokensSnake:  &input,

@@ -111,7 +111,6 @@ func (a *relayApp) handleUpdate(ctx context.Context, update telegram.Update) err
 	if text == "" {
 		text = message.Caption
 	}
-
 	if strings.TrimSpace(text) == "" && len(imagePaths) == 0 {
 		return a.telegram.SendMessage(ctx, message.Chat.ID, "Only text and photo messages are supported right now.")
 	}
@@ -194,7 +193,15 @@ func (w *chatWorker) run(ctx context.Context) {
 			}
 			if ok {
 				w.drainTurnEvents(ctx, active)
-				w.finishTurn(ctx, active.replyMessageID, result)
+				nextActive, retried, err := w.retryTurnAfterCompaction(ctx, active, result)
+				if err != nil {
+					w.finishTurn(ctx, active.replyMessageID, codex.TurnResult{Err: err})
+				} else if retried {
+					active = nextActive
+					continue
+				} else {
+					w.finishTurn(ctx, active.replyMessageID, result)
+				}
 			}
 			for _, p := range active.tmpFiles {
 				if err := os.Remove(p); err != nil {
@@ -253,10 +260,19 @@ func (w *chatWorker) handleEvent(ctx context.Context, event chatEvent, active *a
 
 	if active != nil {
 		logx.Debug("chat worker steering active turn", "chat_id", w.chatID, "thread_id", active.threadID, "turn_id", active.turnID)
+		if err := w.app.recordUserTurnStart(w.chatID, event.text); err != nil {
+			w.sendError(ctx, event.messageID, err)
+			return active, false
+		}
 		if err := w.app.codex.SteerTurn(ctx, active.threadID, active.turnID, event.text, event.imagePaths); err != nil {
+			if clearErr := w.app.clearPendingTurn(w.chatID); clearErr != nil {
+				w.sendError(ctx, event.messageID, fmt.Errorf("steer codex turn: %w (also failed to clear pending continuity state: %v)", err, clearErr))
+				return active, false
+			}
 			w.sendError(ctx, event.messageID, fmt.Errorf("steer codex turn: %w", err))
 		} else {
 			active.tmpFiles = append(active.tmpFiles, event.imagePaths...)
+			active.inputs = append(active.inputs, newTurnReplayInput(event.text, event.imagePaths))
 		}
 		return active, false
 	}
@@ -271,7 +287,9 @@ func (w *chatWorker) handleEvent(ctx context.Context, event chatEvent, active *a
 
 func (w *chatWorker) startTurn(ctx context.Context, messageID int64, text string, imagePaths []string) (*activeChatTurn, error) {
 	options := w.app.threadOptionsForChat(w.chatID)
-	threadID, err := w.app.codex.EnsureThread(ctx, w.app.threadIDForChat(w.chatID), options)
+	previousThreadID := w.app.threadIDForChat(w.chatID)
+	continuity := w.app.continuityForChat(w.chatID)
+	threadID, err := w.app.codex.EnsureThread(ctx, previousThreadID, options)
 	if err != nil {
 		return nil, err
 	}
@@ -279,8 +297,19 @@ func (w *chatWorker) startTurn(ctx context.Context, messageID int64, text string
 		return nil, err
 	}
 
-	handle, err := w.app.codex.StartTurn(ctx, threadID, text, imagePaths)
+	startText := text
+	if previousThreadID != "" && threadID != previousThreadID {
+		startText = buildContinuityBootstrap(continuity, text, len(imagePaths) > 0)
+	}
+	if err := w.app.recordUserTurnStart(w.chatID, text); err != nil {
+		return nil, err
+	}
+
+	handle, err := w.app.codex.StartTurn(ctx, threadID, startText, imagePaths)
 	if err != nil {
+		if clearErr := w.app.clearPendingTurn(w.chatID); clearErr != nil {
+			return nil, fmt.Errorf("start codex turn: %w (also failed to clear pending continuity state: %v)", err, clearErr)
+		}
 		return nil, err
 	}
 
@@ -293,6 +322,7 @@ func (w *chatWorker) startTurn(ctx context.Context, messageID int64, text string
 		resultCh:       handle.ResultCh,
 		stopTyping:     w.startTypingLoop(ctx),
 		tmpFiles:       imagePaths,
+		inputs:         []turnReplayInput{newTurnReplayInput(startText, imagePaths)},
 	}, nil
 }
 
@@ -322,6 +352,9 @@ func (w *chatWorker) startTypingLoop(ctx context.Context) func() {
 
 func (w *chatWorker) finishTurn(ctx context.Context, replyMessageID int64, result codex.TurnResult) {
 	if result.Err != nil {
+		if clearErr := w.app.clearPendingTurn(w.chatID); clearErr != nil {
+			result.Err = fmt.Errorf("%w (also failed to clear pending continuity state: %v)", result.Err, clearErr)
+		}
 		w.sendError(ctx, replyMessageID, result.Err)
 		return
 	}
@@ -339,6 +372,10 @@ func (w *chatWorker) finishTurn(ctx context.Context, replyMessageID int64, resul
 	if strings.TrimSpace(reply) == "" {
 		reply = "Codex completed the turn without returning assistant text."
 	}
+	if err := w.app.recordAssistantTurnCompletion(w.chatID, reply); err != nil {
+		w.sendError(ctx, replyMessageID, err)
+		return
+	}
 
 	chunks := telegram.ChunkMessage(reply, w.app.cfg.TelegramMessageChunkSize)
 	logx.Debug("chat worker replying", "chat_id", w.chatID, "chunks", len(chunks), "text", logx.SummarizeText(reply))
@@ -347,6 +384,55 @@ func (w *chatWorker) finishTurn(ctx context.Context, replyMessageID int64, resul
 			return
 		}
 	}
+}
+
+func (w *chatWorker) retryTurnAfterCompaction(ctx context.Context, active *activeChatTurn, result codex.TurnResult) (*activeChatTurn, bool, error) {
+	if !result.IsContextWindowExceeded() || active.retryCount > 0 || len(active.inputs) == 0 {
+		return nil, false, nil
+	}
+
+	logx.Info("codex turn exceeded context window; compacting and retrying",
+		"chat_id", w.chatID,
+		"thread_id", active.threadID,
+		"turn_id", active.turnID,
+	)
+	if err := w.app.codex.CompactThread(ctx, active.threadID); err != nil {
+		return nil, false, fmt.Errorf("compact codex thread after context window exceeded: %w", err)
+	}
+	nextActive, err := w.restartTurnAfterCompaction(ctx, active)
+	if err != nil {
+		return nil, false, err
+	}
+	return nextActive, true, nil
+}
+
+func (w *chatWorker) restartTurnAfterCompaction(ctx context.Context, previous *activeChatTurn) (*activeChatTurn, error) {
+	firstInput := previous.inputs[0]
+	handle, err := w.app.codex.StartTurn(ctx, previous.threadID, firstInput.text, firstInput.imagePaths)
+	if err != nil {
+		return nil, fmt.Errorf("restart codex turn after compaction: %w", err)
+	}
+
+	nextActive := &activeChatTurn{
+		threadID:       handle.ThreadID,
+		turnID:         handle.TurnID,
+		replyMessageID: previous.replyMessageID,
+		eventCh:        handle.EventCh,
+		resultCh:       handle.ResultCh,
+		stopTyping:     w.startTypingLoop(ctx),
+		tmpFiles:       previous.tmpFiles,
+		inputs:         cloneTurnReplayInputs(previous.inputs),
+		retryCount:     previous.retryCount + 1,
+	}
+	for _, input := range previous.inputs[1:] {
+		if err := w.app.codex.SteerTurn(ctx, handle.ThreadID, handle.TurnID, input.text, input.imagePaths); err != nil {
+			if nextActive.stopTyping != nil {
+				nextActive.stopTyping()
+			}
+			return nil, fmt.Errorf("replay codex steer after compaction: %w", err)
+		}
+	}
+	return nextActive, nil
 }
 
 func (w *chatWorker) handleTurnEvent(ctx context.Context, replyMessageID int64, event codex.TurnStreamEvent) {
@@ -381,6 +467,24 @@ func (w *chatWorker) drainTurnEvents(ctx context.Context, active *activeChatTurn
 func (w *chatWorker) sendError(ctx context.Context, replyMessageID int64, err error) {
 	logx.Debug("chat worker error", "chat_id", w.chatID, "error", err)
 	_ = w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Codex relay error: %v", err))
+}
+
+func newTurnReplayInput(text string, imagePaths []string) turnReplayInput {
+	return turnReplayInput{
+		text:       text,
+		imagePaths: append([]string(nil), imagePaths...),
+	}
+}
+
+func cloneTurnReplayInputs(inputs []turnReplayInput) []turnReplayInput {
+	if len(inputs) == 0 {
+		return nil
+	}
+	cloned := make([]turnReplayInput, 0, len(inputs))
+	for _, input := range inputs {
+		cloned = append(cloned, newTurnReplayInput(input.text, input.imagePaths))
+	}
+	return cloned
 }
 
 func (a *relayApp) isChatAllowed(chatID int64) bool {

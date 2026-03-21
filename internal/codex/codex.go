@@ -17,6 +17,7 @@ type Service interface {
 	Close() error
 	NewThread(ctx context.Context, options ThreadOptions) (string, error)
 	EnsureThread(ctx context.Context, threadID string, options ThreadOptions) (string, error)
+	CompactThread(ctx context.Context, threadID string) error
 	StartTurn(ctx context.Context, threadID string, userText string, imagePaths []string) (*TurnHandle, error)
 	SteerTurn(ctx context.Context, threadID string, turnID string, userText string, imagePaths []string) error
 }
@@ -44,6 +45,10 @@ type TurnHandle struct {
 	ResultCh <-chan TurnResult
 }
 
+type TurnErrorCode string
+
+const TurnErrorCodeContextWindowExceeded TurnErrorCode = "contextWindowExceeded"
+
 type turnSubscription struct {
 	threadID      string
 	turnID        string
@@ -60,6 +65,7 @@ type TurnStreamEvent struct {
 type TurnResult struct {
 	Text             string
 	ErrorMessage     string
+	ErrorCode        TurnErrorCode
 	CommentaryText   string
 	PlanText         string
 	ReasoningSummary string
@@ -131,21 +137,23 @@ type completedItemParams struct {
 }
 
 type errorNotificationParams struct {
-	ThreadID string `json:"threadId"`
-	TurnID   string `json:"turnId,omitempty"`
-	Error    struct {
-		Message string `json:"message"`
-	} `json:"error"`
+	ThreadID string            `json:"threadId"`
+	TurnID   string            `json:"turnId,omitempty"`
+	Error    protocolTurnError `json:"error"`
+}
+
+type protocolTurnError struct {
+	Message        string          `json:"message"`
+	AdditionalData string          `json:"additionalDetails,omitempty"`
+	CodexErrorInfo json.RawMessage `json:"codexErrorInfo,omitempty"`
 }
 
 type usageCarrier struct {
 	Usage *protocolUsage `json:"usage,omitempty"`
 	Turn  *struct {
-		Status string `json:"status"`
-		Error  *struct {
-			Message string `json:"message"`
-		} `json:"error,omitempty"`
-		Usage *protocolUsage `json:"usage,omitempty"`
+		Status string             `json:"status"`
+		Error  *protocolTurnError `json:"error,omitempty"`
+		Usage  *protocolUsage     `json:"usage,omitempty"`
 	} `json:"turn,omitempty"`
 }
 
@@ -256,6 +264,22 @@ func (c *Client) EnsureThread(ctx context.Context, threadID string, options Thre
 	return c.NewThread(ctx, options)
 }
 
+func (c *Client) CompactThread(ctx context.Context, threadID string) error {
+	if strings.TrimSpace(threadID) == "" {
+		return errors.New("missing thread id")
+	}
+	params := struct {
+		ThreadID string `json:"threadId"`
+	}{
+		ThreadID: threadID,
+	}
+	if err := c.rpc.Request(ctx, "thread/compact/start", params, nil); err != nil {
+		return err
+	}
+	logx.Debug("codex thread compacted", "thread_id", threadID)
+	return nil
+}
+
 func (c *Client) StartTurn(ctx context.Context, threadID string, userText string, imagePaths []string) (*TurnHandle, error) {
 	subscription := &turnSubscription{
 		threadID:      threadID,
@@ -364,6 +388,7 @@ func (c *Client) collectTurnResult(subscription *turnSubscription) {
 	var deltas string
 	var completedMessages []agentMessage
 	var errorMessage string
+	var errorCode TurnErrorCode
 	var planDeltas []string
 	var reasoningSummaryDeltas []string
 	var usage *TokenUsage
@@ -419,6 +444,9 @@ func (c *Client) collectTurnResult(subscription *turnSubscription) {
 					continue
 				}
 				errorMessage = params.Error.Message
+				if errorCode == "" {
+					errorCode = params.Error.code()
+				}
 			case "turn/completed":
 				var params turnCompletedParams
 				if !decodeNotificationParams(notification, &params) || !matchesTurn(params.TurnID, subscription.turnID) {
@@ -427,10 +455,14 @@ func (c *Client) collectTurnResult(subscription *turnSubscription) {
 				if params.Turn != nil && errorMessage == "" && params.Turn.Status == "failed" && params.Turn.Error != nil {
 					errorMessage = params.Turn.Error.Message
 				}
+				if params.Turn != nil && errorCode == "" && params.Turn.Error != nil {
+					errorCode = params.Turn.Error.code()
+				}
 				usage = extractTokenUsage(params.usageCarrier)
 				result := TurnResult{
 					Text:             finalTurnText(completedMessages, deltas),
 					ErrorMessage:     errorMessage,
+					ErrorCode:        errorCode,
 					CommentaryText:   commentaryText(completedMessages),
 					PlanText:         strings.TrimSpace(strings.Join(planDeltas, "")),
 					ReasoningSummary: strings.TrimSpace(strings.Join(reasoningSummaryDeltas, "")),
@@ -514,6 +546,21 @@ func commentaryText(messages []agentMessage) string {
 		return ""
 	}
 	return strings.Join(commentary, "\n\n")
+}
+
+func (r TurnResult) IsContextWindowExceeded() bool {
+	return r.ErrorCode == TurnErrorCodeContextWindowExceeded
+}
+
+func (e *protocolTurnError) code() TurnErrorCode {
+	if e == nil || len(e.CodexErrorInfo) == 0 || string(e.CodexErrorInfo) == "null" {
+		return ""
+	}
+	var code string
+	if err := json.Unmarshal(e.CodexErrorInfo, &code); err != nil {
+		return ""
+	}
+	return TurnErrorCode(strings.TrimSpace(code))
 }
 
 func formatIntermediateTurnEvent(phase string, text string) string {

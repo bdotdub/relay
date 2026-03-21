@@ -18,7 +18,7 @@ Relay messages between Telegram and a Codex app server.
 - For each plain-text message, sends it into an existing Codex thread for that chat.
 - Forwards Codex answers back to the same Telegram chat.
 - Keeps one conversation thread per chat and supports steering while a turn is active.
-- Stores chat → thread state plus per-chat verbose, YOLO, fast-mode, and model settings in `.relay-state.json` by default.
+- Stores chat → thread state, a rolling per-chat continuity snapshot, and per-chat verbose, YOLO, fast-mode, and model settings in `.relay-state.json` by default.
 - Injects Telegram-specific developer instructions so replies use Telegram MarkdownV2 and avoid unnecessary filesystem paths.
 - Registers supported slash commands with Telegram via `setMyCommands` at startup.
 
@@ -32,6 +32,7 @@ Otherwise it launches Codex locally over stdio by default.
 - New message arrives mid-turn: treated as `turn/steer` (inline follow-up).
 - `/new` or `/reset`: clear saved thread mapping and start a fresh thread.
 - If a saved thread cannot be resumed, the relay automatically starts a new thread.
+- When a saved thread cannot be resumed, the relay injects the last few persisted chat messages into the first turn on the replacement thread.
 
 ## Telegram commands
 
@@ -126,7 +127,7 @@ go run . \
 - Verbose output is delivered as separate Telegram messages while a turn is running
 - `/model <name>` depends on the configured Codex server accepting that model string
 - Replies are delivered when a turn completes (no streaming)
-- Thread, YOLO, fast-mode, and model state are local-file state, not shared across instances
+- Thread, continuity snapshot, YOLO, fast-mode, and model state are local-file state, not shared across instances
 
 ## Verification
 

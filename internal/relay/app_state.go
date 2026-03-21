@@ -282,6 +282,7 @@ func (a *relayApp) loadState() error {
 			a.yoloByChat = map[int64]bool{}
 			a.serviceTierByChat = map[int64]string{}
 			a.modelByChat = map[int64]string{}
+			a.continuityByChat = map[int64]chatContinuityState{}
 			a.stateMu.Unlock()
 			return nil
 		}
@@ -289,7 +290,7 @@ func (a *relayApp) loadState() error {
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err == nil {
-		if _, hasThreads := raw["threads"]; hasThreads || raw["verbose_by_chat"] != nil || raw["yolo_by_chat"] != nil || raw["service_tier_by_chat"] != nil || raw["model_by_chat"] != nil {
+		if _, hasThreads := raw["threads"]; hasThreads || raw["verbose_by_chat"] != nil || raw["yolo_by_chat"] != nil || raw["service_tier_by_chat"] != nil || raw["model_by_chat"] != nil || raw["continuity_by_chat"] != nil {
 			var state relayState
 			if err := json.Unmarshal(data, &state); err != nil {
 				a.stateMu.Lock()
@@ -298,6 +299,7 @@ func (a *relayApp) loadState() error {
 				a.yoloByChat = map[int64]bool{}
 				a.serviceTierByChat = map[int64]string{}
 				a.modelByChat = map[int64]string{}
+				a.continuityByChat = map[int64]chatContinuityState{}
 				a.stateMu.Unlock()
 				return nil
 			}
@@ -310,6 +312,7 @@ func (a *relayApp) loadState() error {
 			a.yoloByChat = decodeBoolMap(state.YoloByChat)
 			a.serviceTierByChat = decodeStringMap(state.ServiceTierByChat)
 			a.modelByChat = decodeStringMap(state.ModelByChat)
+			a.continuityByChat = decodeContinuityMap(state.ContinuityByChat)
 			a.stateMu.Unlock()
 			return nil
 		}
@@ -323,6 +326,7 @@ func (a *relayApp) loadState() error {
 		a.yoloByChat = map[int64]bool{}
 		a.serviceTierByChat = map[int64]string{}
 		a.modelByChat = map[int64]string{}
+		a.continuityByChat = map[int64]chatContinuityState{}
 		a.stateMu.Unlock()
 		return nil
 	}
@@ -332,6 +336,7 @@ func (a *relayApp) loadState() error {
 	a.yoloByChat = map[int64]bool{}
 	a.serviceTierByChat = map[int64]string{}
 	a.modelByChat = map[int64]string{}
+	a.continuityByChat = map[int64]chatContinuityState{}
 	a.stateMu.Unlock()
 	return nil
 }
@@ -352,6 +357,7 @@ func (a *relayApp) saveState() error {
 		YoloByChat:        encodeBoolMap(a.yoloByChat),
 		ServiceTierByChat: encodeStringMap(a.serviceTierByChat),
 		ModelByChat:       encodeStringMap(a.modelByChat),
+		ContinuityByChat:  encodeContinuityMap(a.continuityByChat),
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	a.stateMu.RUnlock()
