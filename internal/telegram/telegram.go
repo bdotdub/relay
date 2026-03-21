@@ -38,6 +38,37 @@ type Client struct {
 	client      *http.Client
 }
 
+type RequestError struct {
+	Method      string
+	StatusCode  int
+	Status      string
+	Description string
+	Err         error
+}
+
+func (e *RequestError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Status != "" {
+		return fmt.Sprintf("telegram request %s returned HTTP %s", e.Method, e.Status)
+	}
+	if e.Description != "" {
+		return fmt.Sprintf("telegram request %s failed: %s", e.Method, e.Description)
+	}
+	if e.Err != nil {
+		return fmt.Sprintf("telegram request %s failed: %v", e.Method, e.Err)
+	}
+	return fmt.Sprintf("telegram request %s failed", e.Method)
+}
+
+func (e *RequestError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 type Update struct {
 	UpdateID int64    `json:"update_id"`
 	Message  *Message `json:"message"`
@@ -191,12 +222,19 @@ func (c *Client) call(ctx context.Context, method string, payload any, out any) 
 
 	response, err := c.client.Do(request)
 	if err != nil {
-		return fmt.Errorf("telegram request %s failed: %w", method, err)
+		return &RequestError{
+			Method: method,
+			Err:    err,
+		}
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("telegram request %s returned HTTP %s", method, response.Status)
+		return &RequestError{
+			Method:     method,
+			StatusCode: response.StatusCode,
+			Status:     response.Status,
+		}
 	}
 
 	var decoded telegramResponse[json.RawMessage]
@@ -207,7 +245,10 @@ func (c *Client) call(ctx context.Context, method string, payload any, out any) 
 		if decoded.Description == "" {
 			decoded.Description = "telegram API returned an error"
 		}
-		return fmt.Errorf("telegram request %s failed: %s", method, decoded.Description)
+		return &RequestError{
+			Method:      method,
+			Description: decoded.Description,
+		}
 	}
 	logx.Debug("telegram request ok", "method", method)
 	if out == nil {

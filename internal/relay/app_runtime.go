@@ -13,6 +13,11 @@ import (
 	"github.com/bdotdub/relay/internal/telegram"
 )
 
+const (
+	telegramPollRetryInitialDelay = time.Second
+	telegramPollRetryMaxDelay     = 30 * time.Second
+)
+
 func (a *relayApp) run(ctx context.Context) error {
 	defer a.codex.Close()
 
@@ -27,14 +32,31 @@ func (a *relayApp) run(ctx context.Context) error {
 	}
 
 	var offset *int64
+	var pollFailures int
 	for {
 		updates, err := a.telegram.GetUpdates(ctx, offset, a.cfg.TelegramPollTimeoutSeconds)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return nil
 			}
+			if isRetryableTelegramPollError(err) {
+				pollFailures++
+				delay := telegramPollRetryDelay(pollFailures)
+				logx.Warn("telegram getUpdates failed; retrying",
+					"error", err,
+					"retry_in", delay,
+				)
+				if err := a.sleep(ctx, delay); err != nil {
+					if errors.Is(err, context.Canceled) {
+						return nil
+					}
+					return err
+				}
+				continue
+			}
 			return err
 		}
+		pollFailures = 0
 		for _, update := range updates {
 			nextOffset := update.UpdateID + 1
 			offset = &nextOffset
@@ -488,6 +510,51 @@ func cloneTurnReplayInputs(inputs []turnReplayInput) []turnReplayInput {
 		cloned = append(cloned, newTurnReplayInput(input.text, input.imagePaths))
 	}
 	return cloned
+}
+
+func telegramPollRetryDelay(failures int) time.Duration {
+	if failures <= 1 {
+		return telegramPollRetryInitialDelay
+	}
+	delay := telegramPollRetryInitialDelay
+	for attempt := 1; attempt < failures; attempt++ {
+		if delay >= telegramPollRetryMaxDelay/2 {
+			return telegramPollRetryMaxDelay
+		}
+		delay *= 2
+	}
+	if delay > telegramPollRetryMaxDelay {
+		return telegramPollRetryMaxDelay
+	}
+	return delay
+}
+
+func isRetryableTelegramPollError(err error) bool {
+	var requestErr *telegram.RequestError
+	if errors.As(err, &requestErr) {
+		if requestErr.Method != "getUpdates" {
+			return false
+		}
+		if requestErr.Err != nil {
+			return true
+		}
+		return requestErr.StatusCode == 408 || requestErr.StatusCode == 429 || requestErr.StatusCode >= 500
+	}
+	return false
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func contextualizeReplyToMessage(text string, hasImages bool, repliedTo *telegram.Message) string {

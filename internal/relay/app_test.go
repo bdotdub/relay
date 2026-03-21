@@ -82,6 +82,59 @@ func TestSameChatSteersActiveTurn(t *testing.T) {
 	}
 }
 
+func TestRunRetriesTransientTelegramGetUpdatesErrors(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	telegram := &fakeTelegramService{}
+	telegram.queueGetUpdatesResponse(nil, &telegrampkg.RequestError{
+		Method:     "getUpdates",
+		StatusCode: 502,
+		Status:     "502 Bad Gateway",
+	})
+	telegram.queueGetUpdatesResponse([]telegramUpdate{
+		{
+			UpdateID: 1,
+			Message: &telegramMessage{
+				MessageID: 1001,
+				Chat:      privateChat(7),
+				Text:      "Still there?",
+			},
+		},
+	}, nil)
+
+	codex := newFakeCodexService()
+	app := newRelayAppWithServices(testConfig(t), telegram, codex)
+	app.sleep = func(context.Context, time.Duration) error { return nil }
+
+	done := make(chan error, 1)
+	go func() {
+		done <- app.run(ctx)
+	}()
+
+	waitFor(t, "retry reaches next poll", func() bool {
+		return telegram.getUpdatesCount() >= 2
+	})
+	waitFor(t, "turn start after retry", func() bool {
+		return codex.startCount() == 1
+	})
+
+	codex.finishTurn("thread-1", turnResult{Text: "Yep"})
+	waitFor(t, "telegram reply after retry", func() bool {
+		return telegram.messageCount() == 1
+	})
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned error after cancellation: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for run to stop")
+	}
+}
+
 func TestReplyContextPassedToCodexOnStartTurn(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1443,9 +1496,11 @@ func TestSaveStateUsesPrivatePermissions(t *testing.T) {
 }
 
 type fakeTelegramService struct {
-	mu      sync.Mutex
-	sent    []sentTelegramMessage
-	actions []sentTelegramAction
+	mu                  sync.Mutex
+	sent                []sentTelegramMessage
+	actions             []sentTelegramAction
+	getUpdatesCalls     int
+	getUpdatesResponses []fakeGetUpdatesResponse
 }
 
 type sentTelegramMessage struct {
@@ -1458,12 +1513,28 @@ type sentTelegramAction struct {
 	action string
 }
 
+type fakeGetUpdatesResponse struct {
+	updates []telegramUpdate
+	err     error
+}
+
 func (f *fakeTelegramService) DeleteWebhook(ctx context.Context, dropPending bool) error {
 	return nil
 }
 
 func (f *fakeTelegramService) GetUpdates(ctx context.Context, offset *int64, timeoutSeconds int) ([]telegramUpdate, error) {
-	return nil, nil
+	f.mu.Lock()
+	f.getUpdatesCalls++
+	if len(f.getUpdatesResponses) > 0 {
+		response := f.getUpdatesResponses[0]
+		f.getUpdatesResponses = f.getUpdatesResponses[1:]
+		f.mu.Unlock()
+		return response.updates, response.err
+	}
+	f.mu.Unlock()
+
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func (f *fakeTelegramService) DownloadFile(ctx context.Context, fileID string) ([]byte, string, error) {
@@ -1520,6 +1591,21 @@ func (f *fakeTelegramService) chatActions() []sentTelegramAction {
 	out := make([]sentTelegramAction, len(f.actions))
 	copy(out, f.actions)
 	return out
+}
+
+func (f *fakeTelegramService) queueGetUpdatesResponse(updates []telegramUpdate, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.getUpdatesResponses = append(f.getUpdatesResponses, fakeGetUpdatesResponse{
+		updates: updates,
+		err:     err,
+	})
+}
+
+func (f *fakeTelegramService) getUpdatesCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.getUpdatesCalls
 }
 
 type fakeCodexService struct {
