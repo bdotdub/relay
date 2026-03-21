@@ -278,7 +278,7 @@ func (w *chatWorker) notifyQueueOverflow() {
 func (w *chatWorker) handleEvent(ctx context.Context, event chatEvent, active *activeChatTurn) (*activeChatTurn, bool) {
 	if event.isCommand {
 		logx.Debug("chat worker handling command", "chat_id", w.chatID, "message_id", event.messageID, "command", firstCommandToken(event.rawText))
-		if err := w.handleCommand(ctx, event.messageID, event.rawText); err != nil {
+		if err := w.handleCommand(ctx, event.rawText); err != nil {
 			w.sendError(ctx, event.messageID, err)
 		}
 		return active, false

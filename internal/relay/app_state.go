@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/bdotdub/relay/internal/codex"
@@ -61,11 +62,7 @@ func (a *relayApp) lastUsageForChat(chatID int64) *codex.TokenUsage {
 }
 
 func (a *relayApp) toggleVerboseForChat(chatID int64, text string) (bool, string) {
-	command := strings.TrimSpace(text)
-	arg := ""
-	if index := strings.IndexAny(command, " \t\r\n"); index >= 0 {
-		arg = strings.TrimSpace(command[index+1:])
-	}
+	arg := commandArgument(text)
 
 	a.stateMu.Lock()
 	current := a.verboseByChat[chatID]
@@ -117,11 +114,7 @@ func (a *relayApp) toggleVerboseForChat(chatID int64, text string) (bool, string
 }
 
 func (a *relayApp) toggleYoloForChat(chatID int64, text string) (bool, bool, string) {
-	command := strings.TrimSpace(text)
-	arg := ""
-	if index := strings.IndexAny(command, " \t\r\n"); index >= 0 {
-		arg = strings.TrimSpace(command[index+1:])
-	}
+	arg := commandArgument(text)
 
 	a.stateMu.Lock()
 	current := a.yoloByChat[chatID]
@@ -163,11 +156,7 @@ func (a *relayApp) toggleYoloForChat(chatID int64, text string) (bool, bool, str
 }
 
 func (a *relayApp) setModelForChat(chatID int64, text string) (string, bool, string) {
-	command := strings.TrimSpace(text)
-	arg := ""
-	if index := strings.IndexAny(command, " \t\r\n"); index >= 0 {
-		arg = strings.TrimSpace(command[index+1:])
-	}
+	arg := commandArgument(text)
 	if arg == "" || arg == "status" {
 		return a.modelSummaryForChat(chatID), false, fmt.Sprintf("Model is %s for this chat.", a.modelSummaryForChat(chatID))
 	}
@@ -206,13 +195,10 @@ func (a *relayApp) setModelForChat(chatID int64, text string) (string, bool, str
 }
 
 func (a *relayApp) setReasoningEffortForChat(chatID int64, text string) (string, bool, string) {
-	command := strings.TrimSpace(text)
-	arg := ""
-	if index := strings.IndexAny(command, " \t\r\n"); index >= 0 {
-		arg = strings.TrimSpace(command[index+1:])
-	}
+	arg := commandArgument(text)
 	if arg == "" || arg == "status" {
-		return a.reasoningEffortSummaryForChat(chatID), false, fmt.Sprintf("Reasoning is %s for this chat. Choices: %s.", a.reasoningEffortSummaryForChat(chatID), strings.Join(supportedReasoningEfforts(), ", "))
+		summary := a.reasoningEffortSummaryForChat(chatID)
+		return summary, false, fmt.Sprintf("Reasoning is %s for this chat. Choices: %s.", summary, supportedReasoningEffortsList)
 	}
 
 	nextOverride := strings.ToLower(strings.TrimSpace(arg))
@@ -221,7 +207,7 @@ func (a *relayApp) setReasoningEffortForChat(chatID int64, text string) (string,
 		nextOverride = ""
 	default:
 		if !isSupportedReasoningEffort(nextOverride) {
-			return a.reasoningEffortSummaryForChat(chatID), false, fmt.Sprintf("Usage: /reasoning <level>. Supported levels: %s. Use /reasoning default to clear the override.", strings.Join(supportedReasoningEfforts(), ", "))
+			return a.reasoningEffortSummaryForChat(chatID), false, fmt.Sprintf("Usage: /reasoning <level>. Supported levels: %s. Use /reasoning default to clear the override.", supportedReasoningEffortsList)
 		}
 	}
 
@@ -253,11 +239,7 @@ func (a *relayApp) setReasoningEffortForChat(chatID int64, text string) (string,
 }
 
 func (a *relayApp) toggleFastModeForChat(chatID int64, text string) (bool, bool, string) {
-	command := strings.TrimSpace(text)
-	arg := ""
-	if index := strings.IndexAny(command, " \t\r\n"); index >= 0 {
-		arg = strings.TrimSpace(command[index+1:])
-	}
+	arg := commandArgument(text)
 
 	current := a.fastModeForChat(chatID)
 	next := current
@@ -330,13 +312,7 @@ func (a *relayApp) loadState() error {
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			a.stateMu.Lock()
-			a.threadIDsByChat = map[string]string{}
-			a.verboseByChat = map[int64]bool{}
-			a.yoloByChat = map[int64]bool{}
-			a.serviceTierByChat = map[int64]string{}
-			a.modelByChat = map[int64]string{}
-			a.reasoningEffortByChat = map[int64]string{}
-			a.continuityByChat = map[int64]chatContinuityState{}
+			a.resetStateLocked()
 			a.stateMu.Unlock()
 			return nil
 		}
@@ -348,13 +324,7 @@ func (a *relayApp) loadState() error {
 			var state relayState
 			if err := json.Unmarshal(data, &state); err != nil {
 				a.stateMu.Lock()
-				a.threadIDsByChat = map[string]string{}
-				a.verboseByChat = map[int64]bool{}
-				a.yoloByChat = map[int64]bool{}
-				a.serviceTierByChat = map[int64]string{}
-				a.modelByChat = map[int64]string{}
-				a.reasoningEffortByChat = map[int64]string{}
-				a.continuityByChat = map[int64]chatContinuityState{}
+				a.resetStateLocked()
 				a.stateMu.Unlock()
 				return nil
 			}
@@ -377,24 +347,13 @@ func (a *relayApp) loadState() error {
 	var mapping map[string]string
 	if err := json.Unmarshal(data, &mapping); err != nil {
 		a.stateMu.Lock()
-		a.threadIDsByChat = map[string]string{}
-		a.verboseByChat = map[int64]bool{}
-		a.yoloByChat = map[int64]bool{}
-		a.serviceTierByChat = map[int64]string{}
-		a.modelByChat = map[int64]string{}
-		a.reasoningEffortByChat = map[int64]string{}
-		a.continuityByChat = map[int64]chatContinuityState{}
+		a.resetStateLocked()
 		a.stateMu.Unlock()
 		return nil
 	}
 	a.stateMu.Lock()
+	a.resetStateLocked()
 	a.threadIDsByChat = mapping
-	a.verboseByChat = map[int64]bool{}
-	a.yoloByChat = map[int64]bool{}
-	a.serviceTierByChat = map[int64]string{}
-	a.modelByChat = map[int64]string{}
-	a.reasoningEffortByChat = map[int64]string{}
-	a.continuityByChat = map[int64]chatContinuityState{}
 	a.stateMu.Unlock()
 	return nil
 }
@@ -482,8 +441,8 @@ func decodeBoolMap(values map[string]bool) map[int64]bool {
 		if !enabled {
 			continue
 		}
-		var chatID int64
-		if _, err := fmt.Sscanf(rawChatID, "%d", &chatID); err != nil {
+		chatID, err := strconv.ParseInt(strings.TrimSpace(rawChatID), 10, 64)
+		if err != nil {
 			continue
 		}
 		decoded[chatID] = true
@@ -519,8 +478,8 @@ func decodeStringMap(values map[string]string) map[int64]string {
 		if value == "" {
 			continue
 		}
-		var chatID int64
-		if _, err := fmt.Sscanf(rawChatID, "%d", &chatID); err != nil {
+		chatID, err := strconv.ParseInt(strings.TrimSpace(rawChatID), 10, 64)
+		if err != nil {
 			continue
 		}
 		decoded[chatID] = value
@@ -544,15 +503,25 @@ func (a *relayApp) reasoningEffortSummaryForChat(chatID int64) string {
 	return fmt.Sprintf("%s (override)", value)
 }
 
-func supportedReasoningEfforts() []string {
-	return []string{"none", "minimal", "low", "medium", "high", "xhigh"}
-}
-
 func isSupportedReasoningEffort(value string) bool {
-	for _, effort := range supportedReasoningEfforts() {
+	for _, effort := range supportedReasoningEfforts {
 		if value == effort {
 			return true
 		}
 	}
 	return false
 }
+
+func (a *relayApp) resetStateLocked() {
+	a.threadIDsByChat = map[string]string{}
+	a.verboseByChat = map[int64]bool{}
+	a.yoloByChat = map[int64]bool{}
+	a.serviceTierByChat = map[int64]string{}
+	a.modelByChat = map[int64]string{}
+	a.reasoningEffortByChat = map[int64]string{}
+	a.continuityByChat = map[int64]chatContinuityState{}
+}
+
+var supportedReasoningEfforts = []string{"none", "minimal", "low", "medium", "high", "xhigh"}
+
+const supportedReasoningEffortsList = "none, minimal, low, medium, high, xhigh"

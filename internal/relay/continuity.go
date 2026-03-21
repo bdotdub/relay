@@ -47,12 +47,17 @@ func (a *relayApp) resetContinuityForChat(chatID int64) error {
 
 func (a *relayApp) updateContinuityForChat(chatID int64, mutate func(*chatContinuityState)) error {
 	a.stateMu.Lock()
-	state := cloneChatContinuityState(a.continuityByChat[chatID])
-	mutate(&state)
-	if len(state.RecentMessages) == 0 && state.PendingTurn == nil {
+	previous := cloneChatContinuityState(a.continuityByChat[chatID])
+	next := cloneChatContinuityState(previous)
+	mutate(&next)
+	if continuityStatesEqual(previous, next) {
+		a.stateMu.Unlock()
+		return nil
+	}
+	if len(next.RecentMessages) == 0 && next.PendingTurn == nil {
 		delete(a.continuityByChat, chatID)
 	} else {
-		a.continuityByChat[chatID] = state
+		a.continuityByChat[chatID] = next
 	}
 	a.stateMu.Unlock()
 	return a.saveState()
@@ -157,4 +162,21 @@ func decodeContinuityMap(values map[string]chatContinuityState) map[int64]chatCo
 		decoded[chatID] = cloneChatContinuityState(state)
 	}
 	return decoded
+}
+
+func continuityStatesEqual(a, b chatContinuityState) bool {
+	if len(a.RecentMessages) != len(b.RecentMessages) {
+		return false
+	}
+	for i := range a.RecentMessages {
+		if a.RecentMessages[i] != b.RecentMessages[i] {
+			return false
+		}
+	}
+	switch {
+	case a.PendingTurn == nil || b.PendingTurn == nil:
+		return a.PendingTurn == nil && b.PendingTurn == nil
+	default:
+		return *a.PendingTurn == *b.PendingTurn
+	}
 }

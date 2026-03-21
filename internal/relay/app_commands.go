@@ -8,20 +8,13 @@ import (
 	"github.com/bdotdub/relay/internal/codex"
 )
 
-func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text string) error {
+func (w *chatWorker) handleCommand(ctx context.Context, text string) error {
 	command := firstCommandToken(text)
 
 	switch command {
 	case "/new", "/reset":
-		options := w.app.threadOptionsForChat(w.chatID)
-		threadID, err := w.app.codex.NewThread(ctx, options)
+		threadID, err := w.app.startFreshThreadForChat(ctx, w.chatID)
 		if err != nil {
-			return err
-		}
-		if err := w.app.resetContinuityForChat(w.chatID); err != nil {
-			return err
-		}
-		if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {
 			return err
 		}
 		return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Started a new Codex thread in %s mode with model %s.\nthread_id=%s", w.app.executionModeName(w.chatID), w.app.modelForChat(w.chatID), threadID))
@@ -63,14 +56,8 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 		if !changed {
 			return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("YOLO mode is already %s for this chat.", enabledDisabled(enabled)))
 		}
-		threadID, err := w.app.codex.NewThread(ctx, w.app.threadOptionsForChat(w.chatID))
+		threadID, err := w.app.startFreshThreadForChat(ctx, w.chatID)
 		if err != nil {
-			return err
-		}
-		if err := w.app.resetContinuityForChat(w.chatID); err != nil {
-			return err
-		}
-		if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {
 			return err
 		}
 		return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("YOLO mode %s for this chat. Started a fresh Codex thread with model %s.\nthread_id=%s", enabledDisabled(enabled), w.app.modelForChat(w.chatID), threadID))
@@ -82,14 +69,8 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 		if !changed {
 			return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Fast mode is already %s for this chat.", enabledDisabled(enabled)))
 		}
-		threadID, err := w.app.codex.NewThread(ctx, w.app.threadOptionsForChat(w.chatID))
+		threadID, err := w.app.startFreshThreadForChat(ctx, w.chatID)
 		if err != nil {
-			return err
-		}
-		if err := w.app.resetContinuityForChat(w.chatID); err != nil {
-			return err
-		}
-		if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {
 			return err
 		}
 		return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Fast mode %s for this chat. Started a fresh Codex thread with model %s.\nthread_id=%s", enabledDisabled(enabled), w.app.modelForChat(w.chatID), threadID))
@@ -101,14 +82,8 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 		if !changed {
 			return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Model is already %s for this chat.", w.app.modelSummaryForChat(w.chatID)))
 		}
-		threadID, err := w.app.codex.NewThread(ctx, w.app.threadOptionsForChat(w.chatID))
+		threadID, err := w.app.startFreshThreadForChat(ctx, w.chatID)
 		if err != nil {
-			return err
-		}
-		if err := w.app.resetContinuityForChat(w.chatID); err != nil {
-			return err
-		}
-		if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {
 			return err
 		}
 		return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Model set to %s for this chat. Started a fresh Codex thread.\nthread_id=%s", model, threadID))
@@ -120,20 +95,28 @@ func (w *chatWorker) handleCommand(ctx context.Context, messageID int64, text st
 		if !changed {
 			return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Reasoning is already %s for this chat.", w.app.reasoningEffortSummaryForChat(w.chatID)))
 		}
-		threadID, err := w.app.codex.NewThread(ctx, w.app.threadOptionsForChat(w.chatID))
+		threadID, err := w.app.startFreshThreadForChat(ctx, w.chatID)
 		if err != nil {
-			return err
-		}
-		if err := w.app.resetContinuityForChat(w.chatID); err != nil {
-			return err
-		}
-		if err := w.app.setThreadIDForChat(w.chatID, threadID); err != nil {
 			return err
 		}
 		return w.app.telegram.SendMessage(ctx, w.chatID, fmt.Sprintf("Reasoning set to %s for this chat. Started a fresh Codex thread.\nthread_id=%s", effort, threadID))
 	default:
 		return w.app.telegram.SendMessage(ctx, w.chatID, "Unknown command. Use /help for the supported commands.")
 	}
+}
+
+func (a *relayApp) startFreshThreadForChat(ctx context.Context, chatID int64) (string, error) {
+	threadID, err := a.codex.NewThread(ctx, a.threadOptionsForChat(chatID))
+	if err != nil {
+		return "", err
+	}
+	if err := a.resetContinuityForChat(chatID); err != nil {
+		return "", err
+	}
+	if err := a.setThreadIDForChat(chatID, threadID); err != nil {
+		return "", err
+	}
+	return threadID, nil
 }
 
 func (a *relayApp) threadOptionsForChat(chatID int64) codex.ThreadOptions {
@@ -233,4 +216,15 @@ func formatTokenUsage(usage *codex.TokenUsage) string {
 		parts = append(parts, fmt.Sprintf("total=%d", usage.Total))
 	}
 	return strings.Join(parts, " ")
+}
+
+func commandArgument(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	if index := strings.IndexAny(text, " \t\r\n"); index >= 0 {
+		return strings.TrimSpace(text[index+1:])
+	}
+	return ""
 }

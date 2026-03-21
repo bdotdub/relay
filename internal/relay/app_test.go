@@ -1339,6 +1339,21 @@ func TestNewCommandClearsContinuity(t *testing.T) {
 	}
 }
 
+func TestResetContinuitySkipsNoOpSave(t *testing.T) {
+	cfg := testConfig(t)
+	stateRoot := t.TempDir()
+	blockingPath := filepath.Join(stateRoot, "not-a-directory")
+	if err := os.WriteFile(blockingPath, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write blocking path: %v", err)
+	}
+	cfg.StatePath = filepath.Join(blockingPath, "relay-state.json")
+
+	app := newRelayAppWithServices(cfg, &fakeTelegramService{}, newFakeCodexService())
+	if err := app.resetContinuityForChat(7); err != nil {
+		t.Fatalf("reset empty continuity should be a no-op, got %v", err)
+	}
+}
+
 func TestActiveTurnSendsTypingAction(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
